@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.0 Control</div>
+  <div id="version">v1.1 Control</div>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -34,15 +34,19 @@
 
       if (!drawing || zeroA === null) return;
 
+      // Berechnung der Abweichung
       let dA = lastAlpha - zeroA;
       if (dA > 180) dA -= 360;
       if (dA < -180) dA += 360;
       let dB = lastBeta - zeroB;
 
+      // Begrenzung der Neigungswerte auf +/-20°
       dA = Math.max(-20, Math.min(20, dA));
       dB = Math.max(-20, Math.min(20, dB));
 
-      const x = (dA + 20) / 40;
+      // Achsen invertiert: Rechtsbewegung führt zu kleinerem x-Wert
+      const x = 1 - ((dA + 20) / 40);
+      // Achse y invertiert, falls nötig: hier bleibt y von oben nach unten
       const y = 1 - ((dB + 20) / 40);
 
       socket.emit("draw", { x, y, deviceId: socket.id });
@@ -71,6 +75,7 @@
       zeroB   = lastBeta;
     }, { passive: false });
 
+    // Touchend: stop drawing
     btn.addEventListener("touchend", e => {
       e.preventDefault();
       drawing = false;
