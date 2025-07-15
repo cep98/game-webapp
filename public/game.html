@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.5 Game</div>
+  <div id="version">v1.6 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -26,22 +26,28 @@
           W   = c.width,
           H   = c.height;
 
-    // Ball‐Objekt mit Grafik
-    let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20 };
+    // Ball‐Objekt mit Grafik und Rotation
+    let ball = {
+      x: W/2, y: H/2,
+      vx: 0, vy: 0,
+      r: 20,
+      angle: 0,
+      angularVelocity: 0
+    };
     const ballImg = new Image();
     let imgLoaded = false;
     ballImg.src = '/ball.png';
     ballImg.onload = () => { imgLoaded = true; };
 
-    const FRICTION     = 0.995,
-          BOUNCE       = 0.8,
-          HIT_STRENGTH = 0.01, // Basisimpuls pro Pixel Bewegungsdifferenz
-          PTR_R        = 8,    // Kleinere Punktgröße für präzisere Kollision
-          PTR_TTL      = 500;
+    const FRICTION      = 0.995,
+          BOUNCE        = 0.8,
+          HIT_STRENGTH  = 0.01,
+          SPIN_STRENGTH = 0.0005, // Stärke des Spins pro Pixel Bewegungsdifferenz
+          PTR_R         = 8,
+          PTR_TTL       = 500;
 
     const pointers = {}; // deviceId → { x,y,px,py,t }
 
-    // Segmentbasierte Kollisionserkennung
     function segmentCollision(p) {
       const ax = p.px, ay = p.py;
       const bx = p.x,  by = p.y;
@@ -87,7 +93,7 @@
       for (let id in pointers) {
         const p = pointers[id];
         if (segmentCollision(p)) {
-          // Dynamischer Impuls basierend auf Zeigergeschwindigkeit
+          // Linearer Impuls basierend auf Zeigergeschwindigkeit
           const dxSeg = p.x - p.px;
           const dySeg = p.y - p.py;
           const pointerSpeed = Math.hypot(dxSeg, dySeg);
@@ -106,35 +112,49 @@
 
           ball.vx += nx * impulse;
           ball.vy += ny * impulse;
+
+          // Tangentialer Spin
+          // Tangentialvektor = (-ny, nx)
+          const tx = -ny;
+          const ty = nx;
+          // Geschwindigkeit entlang Tangente
+          const tangentialSpeed = dxSeg * tx + dySeg * ty;
+          ball.angularVelocity += tangentialSpeed * SPIN_STRENGTH;
         }
       }
 
       // Bewegung und Physik
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
+      ball.angle += ball.angularVelocity * dt;
 
       // Wand‑Abprall
-      if (ball.x - ball.r < 0) { ball.x = ball.r;     ball.vx = -ball.vx * BOUNCE; }
-      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; }
-      if (ball.y - ball.r < 0) { ball.y = ball.r;     ball.vy = -ball.vy * BOUNCE; }
-      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; }
+      if (ball.x - ball.r < 0) { ball.x = ball.r;     ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= 0.9; }
+      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= 0.9; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r;     ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= 0.9; }
+      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= 0.9; }
 
       // Reibung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
+      ball.angularVelocity *= FRICTION;
     }
 
     function draw() {
       ctx.clearRect(0,0,W,H);
-      // Ball (Grafik oder Fallback)
+      // Ball (Grafik oder Fallback mit Rotation)
+      ctx.save();
+      ctx.translate(ball.x, ball.y);
+      ctx.rotate(ball.angle);
       if (imgLoaded) {
-        ctx.drawImage(ballImg, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
+        ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
       } else {
         ctx.beginPath();
         ctx.fillStyle = '#f90';
-        ctx.arc(ball.x, ball.y, ball.r, 0, 2*Math.PI);
+        ctx.arc(0, 0, ball.r, 0, 2*Math.PI);
         ctx.fill();
       }
+      ctx.restore();
 
       // Zeigerpunkte
       for (let id in pointers) {
