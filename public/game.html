@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.3 Game</div>
+  <div id="version">v1.4 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -36,7 +36,7 @@
     const FRICTION     = 0.995,
           BOUNCE       = 0.8,
           HIT_STRENGTH = 0.3,
-          PTR_R        = 20,  // Pointer-Radius leicht vergrößert
+          PTR_R        = 12,  // Pointer-Radius verkleinert für präzisere Kollisionsprüfung
           PTR_TTL      = 500;
 
     const pointers = {}; // deviceId → { x,y,px,py,t }
@@ -87,7 +87,6 @@
       for (let id in pointers) {
         const p = pointers[id];
         if (segmentCollision(p)) {
-          // Richtung vom Kollisionspunkt zum Ballmittelpunkt
           const ax = p.px, ay = p.py;
           const bx = p.x,  by = p.y;
           const abx = bx - ax, aby = by - ay;
@@ -123,7 +122,6 @@
       if (imgLoaded) {
         ctx.drawImage(ballImg, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
       } else {
-        // Fallback: runder Ball
         ctx.beginPath();
         ctx.fillStyle = '#f90';
         ctx.arc(ball.x, ball.y, ball.r, 0, 2*Math.PI);
