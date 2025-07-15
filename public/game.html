@@ -21,9 +21,10 @@
       socket.emit("identify", { role:"display", deviceId: null });
     });
 
-    const c   = document.getElementById("canvas"),
-          ctx = c.getContext("2d"),
-          W   = c.width, H = c.height;
+    const c       = document.getElementById("canvas"),
+          ctx     = c.getContext("2d"),
+          W       = c.width,
+          H       = c.height;
 
     // Ball‐Objekt
     let ball = { x:W/2, y:H/2, vx:0, vy:0, r:20 };
@@ -31,7 +32,7 @@
     const FRICTION     = 0.995,
           BOUNCE       = 0.8,
           HIT_STRENGTH = 0.3,
-          PTR_R        = 8,
+          PTR_R        = 16,          // Größe des Laserpunkts vergrößert von 8 auf 16
           PTR_TTL      = 500;
 
     const pointers = {}; // deviceId → { x,y,t }
@@ -65,10 +66,10 @@
       ball.x += ball.vx*dt;
       ball.y += ball.vy*dt;
       // Wand‑Abprall
-      if (ball.x - ball.r < 0) { ball.x=ball.r; ball.vx=-ball.vx*BOUNCE; }
-      if (ball.x + ball.r > W) { ball.x=W-ball.r; ball.vx=-ball.vx*BOUNCE; }
-      if (ball.y - ball.r < 0) { ball.y=ball.r; ball.vy=-ball.vy*BOUNCE; }
-      if (ball.y + ball.r > H) { ball.y=H-ball.r; ball.vy=-ball.vy*BOUNCE; }
+      if (ball.x - ball.r < 0) { ball.x = ball.r;           ball.vx = -ball.vx * BOUNCE; }
+      if (ball.x + ball.r > W) { ball.x = W - ball.r;       ball.vx = -ball.vx * BOUNCE; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r;           ball.vy = -ball.vy * BOUNCE; }
+      if (ball.y + ball.r > H) { ball.y = H - ball.r;       ball.vy = -ball.vy * BOUNCE; }
       // Reibung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
@@ -79,21 +80,21 @@
       // Ball
       ctx.beginPath();
       ctx.fillStyle = "#f90";
-      ctx.arc(ball.x, ball.y, ball.r, 0,2*Math.PI);
+      ctx.arc(ball.x, ball.y, ball.r, 0, 2 * Math.PI);
       ctx.fill();
       // Pointers
       for (let id in pointers) {
         const p = pointers[id];
         ctx.beginPath();
         ctx.fillStyle = "#0cf";
-        ctx.arc(p.x,p.y,PTR_R,0,2*Math.PI);
+        ctx.arc(p.x, p.y, PTR_R, 0, 2 * Math.PI);  // geänderter Radius
         ctx.fill();
       }
     }
 
     let last = performance.now();
-    (function loop(now){
-      const dt = (now - last)/16.67;
+    (function loop(now) {
+      const dt = (now - last) / 16.67;
       last = now;
       update(dt);
       draw();
