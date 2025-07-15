@@ -11,112 +11,150 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.7 Game</div>
+  <div id="version">v1.8 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     socket.on("connect", () => {
-      socket.emit("identify", { role:"display", deviceId: null });
+      socket.emit("identify", { role: "display", deviceId: null });
     });
 
-    const c   = document.getElementById("canvas"),
-          ctx = c.getContext("2d"),
-          W   = c.width,
-          H   = c.height;
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height;
 
     // Ball‐Objekt mit Grafik und Rotation
-    let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20, angle: 0, angularVelocity: 0 };
+    const ball = {
+      x: W/2,
+      y: H/2,
+      vx: 0,
+      vy: 0,
+      r: 20,
+      angle: 0,
+      angularVelocity: 0
+    };
     const ballImg = new Image();
     let imgLoaded = false;
     ballImg.src = '/ball.png';
     ballImg.onload = () => { imgLoaded = true; };
 
-    const FRICTION      = 0.995,
-          BOUNCE        = 0.8,
-          HIT_STRENGTH  = 0.01,
-          SPIN_STRENGTH = 0.0005,
-          PTR_R         = 12,    // Zeigerpunkt Radius
-          PTR_TTL       = 1000;  // Lebensdauer Pointer in ms
+    const FRICTION      = 0.995;
+    const BOUNCE        = 0.8;
+    const HIT_STRENGTH  = 0.01;
+    const SPIN_STRENGTH = 0.0005;
+    const PTR_R         = 10;      // Zeigerpunkt Radius
+    const PTR_TTL       = 2000;    // Pointer-Lebensdauer
 
-    const pointers = {}; // deviceId → { x,y,px,py,t }
+    const pointers = {}; // deviceId → { x, y, px, py, t }
 
+    // Empfang von Pointer-Daten
     socket.on("draw", ({ x, y, deviceId }) => {
-      const nx = x * W, ny = y * H, now = performance.now();
+      const now = performance.now();
+      const nx = x * W;
+      const ny = y * H;
       if (pointers[deviceId]) {
         pointers[deviceId].px = pointers[deviceId].x;
         pointers[deviceId].py = pointers[deviceId].y;
       }
-      pointers[deviceId] = { x: nx, y: ny, px: pointers[deviceId]?.px ?? nx, py: pointers[deviceId]?.py ?? ny, t: now };
+      pointers[deviceId] = { x: nx, y: ny, px: pointers[deviceId]?.px || nx, py: pointers[deviceId]?.py || ny, t: now };
     });
 
-    function cleanup(now) {
-      for (const id in pointers) {
-        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
+    function cleanupPointers(now) {
+      for (let id in pointers) {
+        if (now - pointers[id].t > PTR_TTL) {
+          delete pointers[id];
+        }
       }
     }
 
     function update(dt) {
-      const now = performance.now(); cleanup(now);
+      const now = performance.now();
+      cleanupPointers(now);
 
-      for (const id in pointers) {
+      // Kollision und Physik
+      for (let id in pointers) {
         const p = pointers[id];
-        // Kollisionen behandeln (wie zuvor)
-        const ax = p.px, ay = p.py, bx = p.x, by = p.y;
+        // Segment-Kollision
+        const ax = p.px, ay = p.py;
+        const bx = p.x,  by = p.y;
         const dxSeg = bx - ax, dySeg = by - ay;
         const cx = ball.x, cy = ball.y;
-        // Segment-Test
         const ab2 = dxSeg*dxSeg + dySeg*dySeg;
-        let tSeg = ab2>0?((cx-ax)*dxSeg + (cy-ay)*dySeg)/ab2:0;
+        let tSeg = ab2>0 ? ((cx-ax)*dxSeg + (cy-ay)*dySeg) / ab2 : 0;
         tSeg = Math.max(0, Math.min(1, tSeg));
         const closestX = ax + dxSeg * tSeg;
         const closestY = ay + dySeg * tSeg;
         const dist = Math.hypot(ball.x - closestX, ball.y - closestY);
+
         if (dist < ball.r + PTR_R) {
+          // Linearer Impuls
           const pointerSpeed = Math.hypot(dxSeg, dySeg);
           const impulse = HIT_STRENGTH * pointerSpeed;
-          // Normale
-          const nx = (ball.x - closestX) / (dist||1);
-          const ny = (ball.y - closestY) / (dist||1);
+          const nx = (ball.x - closestX) / (dist || 1);
+          const ny = (ball.y - closestY) / (dist || 1);
           ball.vx += nx * impulse;
           ball.vy += ny * impulse;
-          // Spin
-          const tx = -ny, ty = nx;
+          
+          // Tangentialer Spin
+          const tx = -ny;
+          const ty = nx;
           const tangentialSpeed = dxSeg * tx + dySeg * ty;
           ball.angularVelocity += tangentialSpeed * SPIN_STRENGTH;
         }
       }
 
-      // Physik
-      ball.x += ball.vx * dt; ball.y += ball.vy * dt;
+      // Bewegung
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
-      // Wand‑Abprall + Dämpfung
+
+      // Wand‑Abprall und Dämpfung
       if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx*BOUNCE; ball.angularVelocity*=0.9; }
       if (ball.x + ball.r > W) { ball.x = W-ball.r; ball.vx = -ball.vx*BOUNCE; ball.angularVelocity*=0.9; }
       if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy*BOUNCE; ball.angularVelocity*=0.9; }
       if (ball.y + ball.r > H) { ball.y = H-ball.r; ball.vy = -ball.vy*BOUNCE; ball.angularVelocity*=0.9; }
-      ball.vx*=FRICTION; ball.vy*=FRICTION; ball.angularVelocity*=FRICTION;
+
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      ball.angularVelocity *= FRICTION;
     }
 
     function draw() {
-      ctx.clearRect(0,0,W,H);
-      // Zeigerpunkte zuerst
-      for (const id in pointers) {
-        const p = pointers[id];
-        ctx.beginPath(); ctx.fillStyle='#0cf'; ctx.arc(p.x, p.y, PTR_R,0,2*Math.PI); ctx.fill();
+      ctx.clearRect(0, 0, W, H);
+
+      // Ball zuerst zeichnen
+      ctx.save();
+      ctx.translate(ball.x, ball.y);
+      ctx.rotate(ball.angle);
+      if (imgLoaded) {
+        ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
+      } else {
+        ctx.beginPath();
+        ctx.fillStyle = '#f90';
+        ctx.arc(0, 0, ball.r, 0, 2 * Math.PI);
+        ctx.fill();
       }
-      // Ball rotieren & zeichnen
-      ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.angle);
-      if (imgLoaded) ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
-      else { ctx.beginPath(); ctx.fillStyle='#f90'; ctx.arc(0,0,ball.r,0,2*Math.PI); ctx.fill(); }
       ctx.restore();
+
+      // Zeigerpunkte oben drauf
+      for (let id in pointers) {
+        const p = pointers[id];
+        ctx.beginPath();
+        ctx.fillStyle = '#0cf';
+        ctx.arc(p.x, p.y, PTR_R, 0, 2 * Math.PI);
+        ctx.fill();
+      }
     }
 
     let last = performance.now();
     (function loop(now) {
-      const dt = (now - last)/16.67; last = now;
-      update(dt); draw(); requestAnimationFrame(loop);
+      const dt = (now - last) / 16.67;
+      last = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
     })(last);
   </script>
 </body>
