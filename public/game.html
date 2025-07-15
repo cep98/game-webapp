@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Game</title>
+  <style>
+    body {margin:0; background:#111; overflow:hidden;}
+    canvas {display:block; margin:auto; background:#222;}
+    #version {position:absolute; top:10px; left:10px; color:#fff; opacity:0.6;}
+  </style>
+</head>
+<body>
+  <div id="version">v1.0 Game</div>
+  <canvas id="canvas" width="1024" height="1024"></canvas>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    socket.on("connect", () => {
+      socket.emit("identify", { role:"display", deviceId: null });
+    });
+
+    const c   = document.getElementById("canvas"),
+          ctx = c.getContext("2d"),
+          W   = c.width, H = c.height;
+
+    // Ball‐Objekt
+    let ball = { x:W/2, y:H/2, vx:0, vy:0, r:20 };
+
+    const FRICTION     = 0.995,
+          BOUNCE       = 0.8,
+          HIT_STRENGTH = 0.3,
+          PTR_R        = 8,
+          PTR_TTL      = 500;
+
+    const pointers = {}; // deviceId → { x,y,t }
+
+    socket.on("draw", ({ x, y, deviceId }) => {
+      pointers[deviceId] = { x:x*W, y:y*H, t: performance.now() };
+    });
+
+    function cleanup(now) {
+      for (let id in pointers) {
+        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
+      }
+    }
+
+    function update(dt) {
+      const now = performance.now();
+      cleanup(now);
+      // Pointer‑Kollision
+      for (let id in pointers) {
+        const p = pointers[id];
+        const dx = ball.x - p.x,
+              dy = ball.y - p.y,
+              d  = Math.hypot(dx,dy);
+        if (d < ball.r + PTR_R) {
+          const nx = dx/d, ny = dy/d;
+          ball.vx += nx*HIT_STRENGTH;
+          ball.vy += ny*HIT_STRENGTH;
+        }
+      }
+      // Bewegung
+      ball.x += ball.vx*dt;
+      ball.y += ball.vy*dt;
+      // Wand‑Abprall
+      if (ball.x - ball.r < 0) { ball.x=ball.r; ball.vx=-ball.vx*BOUNCE; }
+      if (ball.x + ball.r > W) { ball.x=W-ball.r; ball.vx=-ball.vx*BOUNCE; }
+      if (ball.y - ball.r < 0) { ball.y=ball.r; ball.vy=-ball.vy*BOUNCE; }
+      if (ball.y + ball.r > H) { ball.y=H-ball.r; ball.vy=-ball.vy*BOUNCE; }
+      // Reibung
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+    }
+
+    function draw() {
+      ctx.clearRect(0,0,W,H);
+      // Ball
+      ctx.beginPath();
+      ctx.fillStyle = "#f90";
+      ctx.arc(ball.x, ball.y, ball.r, 0,2*Math.PI);
+      ctx.fill();
+      // Pointers
+      for (let id in pointers) {
+        const p = pointers[id];
+        ctx.beginPath();
+        ctx.fillStyle = "#0cf";
+        ctx.arc(p.x,p.y,PTR_R,0,2*Math.PI);
+        ctx.fill();
+      }
+    }
+
+    let last = performance.now();
+    (function loop(now){
+      const dt = (now - last)/16.67;
+      last = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    })(last);
+  </script>
+</body>
+</html>
