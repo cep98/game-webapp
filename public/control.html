@@ -1,54 +1,79 @@
-<script>
-  const socket = io();
-  socket.on("connect", () => {
-    socket.emit("identify", { role:"control", deviceId: socket.id });
-  });
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Control</title>
+  <style>
+    body { margin: 0; background: #222; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
+    #laserBtn { width: 100px; height: 100px; border-radius: 50%; background: red; border: none; font-size: 1.2em; color: #fff; touch-action: none; }
+    #version { position: absolute; top: 10px; right: 10px; opacity: 0.6; }
+  </style>
+</head>
+<body>
+  <div id="version">v1.0 Control</div>
+  <button id="laserBtn">Laser</button>
 
-  const btn = document.getElementById("laserBtn");
-  let drawing = false, zeroA = null, zeroB = null, permRequested = false;
-  let lastAlpha = 0, lastBeta = 0;
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    socket.on("connect", () => {
+      socket.emit("identify", { role: "control", deviceId: socket.id });
+    });
 
-  // DeviceOrientation‑Listener immer schon registrieren
-  window.addEventListener("deviceorientation", ev => {
-    lastAlpha = ev.alpha; 
-    lastBeta  = ev.beta;
-    if (!drawing || zeroA === null) return;
-    // ... deine bestehende draw‑Logik hier ...
-    let dA = lastAlpha - zeroA;
-    if (dA > 180) dA -= 360;
-    if (dA < -180) dA += 360;
-    let dB = lastBeta - zeroB;
-    dA = Math.max(-20, Math.min(20, dA));
-    dB = Math.max(-20, Math.min(20, dB));
-    const x = (dA + 20)/40;
-    const y = 1 - ((dB + 20)/40);
-    socket.emit("draw", { x, y, deviceId: socket.id });
-  });
+    const btn = document.getElementById("laserBtn");
+    let drawing = false;
+    let zeroA = null, zeroB = null;
+    let permRequested = false;
+    let lastAlpha = 0, lastBeta = 0;
 
-  btn.addEventListener("touchstart", async e => {
-    e.preventDefault();
-    // nur einmalig die Permission anfragen
-    if (!permRequested && DeviceOrientationEvent?.requestPermission) {
-      permRequested = true;
-      try {
-        const state = await DeviceOrientationEvent.requestPermission();
-        if (state !== "granted") {
-          alert("Gyroskop‑Zugriff verweigert – ohne ihn kann kein Laserpunkt gesendet werden.");
+    // Immer DeviceOrientation-Events registrieren
+    window.addEventListener("deviceorientation", ev => {
+      lastAlpha = ev.alpha;
+      lastBeta = ev.beta;
+      if (!drawing || zeroA === null) return;
+
+      let dA = lastAlpha - zeroA;
+      if (dA > 180) dA -= 360;
+      if (dA < -180) dA += 360;
+      let dB = lastBeta - zeroB;
+
+      // Begrenzung der Neigungswerte auf +/-20°
+      dA = Math.max(-20, Math.min(20, dA));
+      dB = Math.max(-20, Math.min(20, dB));
+
+      const x = (dA + 20) / 40;
+      const y = 1 - ((dB + 20) / 40);
+
+      socket.emit("draw", { x, y, deviceId: socket.id });
+    });
+
+    // Touchstart: Permission anfragen und Zeichnen starten
+    btn.addEventListener("touchstart", async e => {
+      e.preventDefault();
+      if (!permRequested && DeviceOrientationEvent?.requestPermission) {
+        permRequested = true;
+        try {
+          const state = await DeviceOrientationEvent.requestPermission();
+          if (state !== "granted") {
+            alert("Gyroskop-Zugriff verweigert – ohne ihn kann kein Laserpunkt gesendet werden.");
+            return;
+          }
+        } catch (err) {
+          console.warn("Permission-Request fehlgeschlagen:", err);
           return;
         }
-      } catch(err) {
-        console.warn("Permission‑Request fehlgeschlagen:", err);
-        return;
       }
-    }
-    // erst nach erfolgreicher Freigabe zeichnen
-    drawing = true;
-    zeroA   = lastAlpha;
-    zeroB   = lastBeta;
-  }, { passive: false });
+      drawing = true;
+      zeroA = lastAlpha;
+      zeroB = lastBeta;
+    }, { passive: false });
 
-  btn.addEventListener("touchend", e => {
-    e.preventDefault();
-    drawing = false;
-  }, { passive: false });
-</script>
+    // Touchend: Zeichnen stoppen
+    btn.addEventListener("touchend", e => {
+      e.preventDefault();
+      drawing = false;
+    }, { passive: false });
+  </script>
+</body>
+</html>
