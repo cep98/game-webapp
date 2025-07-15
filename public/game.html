@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.4 Game</div>
+  <div id="version">v1.5 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -30,13 +30,13 @@
     let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20 };
     const ballImg = new Image();
     let imgLoaded = false;
-    ballImg.src = '/ball.png'; // Pfad zur echten Ball-Grafik
+    ballImg.src = '/ball.png';
     ballImg.onload = () => { imgLoaded = true; };
 
     const FRICTION     = 0.995,
           BOUNCE       = 0.8,
-          HIT_STRENGTH = 0.3,
-          PTR_R        = 12,  // Pointer-Radius verkleinert für präzisere Kollisionsprüfung
+          HIT_STRENGTH = 0.01, // Basisimpuls pro Pixel Bewegungsdifferenz
+          PTR_R        = 8,    // Kleinere Punktgröße für präzisere Kollision
           PTR_TTL      = 500;
 
     const pointers = {}; // deviceId → { x,y,px,py,t }
@@ -83,10 +83,17 @@
     function update(dt) {
       const now = performance.now();
       cleanup(now);
-      // Pointer‑Kollision mit Segment-Test
+
       for (let id in pointers) {
         const p = pointers[id];
         if (segmentCollision(p)) {
+          // Dynamischer Impuls basierend auf Zeigergeschwindigkeit
+          const dxSeg = p.x - p.px;
+          const dySeg = p.y - p.py;
+          const pointerSpeed = Math.hypot(dxSeg, dySeg);
+          const impulse = HIT_STRENGTH * pointerSpeed;
+
+          // Normale vom Kollisionspunkt zum Ballzentrum
           const ax = p.px, ay = p.py;
           const bx = p.x,  by = p.y;
           const abx = bx - ax, aby = by - ay;
@@ -94,23 +101,24 @@
           let tSeg = ab2 > 0 ? Math.max(0, Math.min(1, ((ball.x - ax)*abx + (ball.y - ay)*aby)/ab2)) : 0;
           const cx = ax + abx * tSeg;
           const cy = ay + aby * tSeg;
-          const dx = ball.x - cx;
-          const dy = ball.y - cy;
-          const dist = Math.hypot(dx,dy) || 1;
-          const nx = dx/dist;
-          const ny = dy/dist;
-          ball.vx += nx * HIT_STRENGTH;
-          ball.vy += ny * HIT_STRENGTH;
+          const nx = (ball.x - cx) / (Math.hypot(ball.x - cx, ball.y - cy) || 1);
+          const ny = (ball.y - cy) / (Math.hypot(ball.x - cx, ball.y - cy) || 1);
+
+          ball.vx += nx * impulse;
+          ball.vy += ny * impulse;
         }
       }
-      // Bewegung
+
+      // Bewegung und Physik
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
+
       // Wand‑Abprall
       if (ball.x - ball.r < 0) { ball.x = ball.r;     ball.vx = -ball.vx * BOUNCE; }
       if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; }
       if (ball.y - ball.r < 0) { ball.y = ball.r;     ball.vy = -ball.vy * BOUNCE; }
       if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; }
+
       // Reibung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
@@ -118,7 +126,7 @@
 
     function draw() {
       ctx.clearRect(0,0,W,H);
-      // Ball (Grafik)
+      // Ball (Grafik oder Fallback)
       if (imgLoaded) {
         ctx.drawImage(ballImg, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
       } else {
@@ -127,7 +135,8 @@
         ctx.arc(ball.x, ball.y, ball.r, 0, 2*Math.PI);
         ctx.fill();
       }
-      // Pointers
+
+      // Zeigerpunkte
       for (let id in pointers) {
         const p = pointers[id];
         ctx.beginPath();
