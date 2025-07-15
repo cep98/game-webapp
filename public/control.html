@@ -3,77 +3,222 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Control</title>
+  <title>Laserpointer Control v3.11</title>
   <style>
-    body { margin: 0; background: #222; color: #fff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; }
-    #laserBtn { width: 100px; height: 100px; border-radius: 50%; background: red; border: none; font-size: 1.2em; color: #fff; touch-action: none; }
-    #version { position: absolute; top: 10px; right: 10px; opacity: 0.6; }
+    /* Keine Touch-Selection oder Callouts */
+    *, button {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      -moz-user-select: none;
+      -ms-user-select: none;
+      user-select: none;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #000;
+      color: #fff;
+      font-family: sans-serif;
+    }
+    .version {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      font-size: 14px;
+      opacity: 0.7;
+    }
+    .setting {
+      margin: 20px 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    input[type="range"] {
+      -webkit-appearance: none;
+      width: 80%;
+      height: 20px;
+      border-radius: 10px;
+      background: transparent;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 20px;
+      border-radius: 10px;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 24px; height: 24px;
+      margin-top: -2px;
+      background: #fff;
+      border: 1px solid #888;
+      border-radius: 50%;
+    }
+    input[type="range"]::-moz-range-track {
+      height: 20px;
+      border-radius: 10px;
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 24px; height: 24px;
+      background: #fff;
+      border: 1px solid #888;
+      border-radius: 50%;
+    }
+    .value {
+      width: 50px;
+      text-align: right;
+      font-size: 1rem;
+    }
+    #preview {
+      width: 40px;
+      height: 40px;
+      border: 2px solid #fff;
+      box-sizing: border-box;
+      background: hsl(0,100%,50%);
+    }
+    #laserBtn {
+      position: absolute;
+      bottom: 30%;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 80px;
+      height: 80px;
+      border-radius: 50%;
+      background: #fff;
+      border: none;
+      touch-action: none;
+    }
+    /* Button zum Anfordern der Permission */
+    #permBtn {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 12px 20px;
+      font-size: 16px;
+      z-index: 1000;
+    }
   </style>
 </head>
 <body>
-  <div id="version">v1.0 Control</div>
-  <button id="laserBtn">Laser</button>
+  <!-- Gyro-Permission -->
+  <button id="permBtn">Gyro freigeben</button>
+
+  <div class="version">v3.11</div>
+
+  <div class="setting">
+    <input id="hue" type="range" min="0" max="360" value="0"/>
+    <span id="hueVal" class="value">0°</span>
+  </div>
+
+  <div class="setting">
+    <input id="intensity" type="range" min="0" max="100" value="50"/>
+    <span id="intVal" class="value">50 %</span>
+    <div id="preview"></div>
+  </div>
+
+  <button id="laserBtn"></button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    socket.on("connect", () => {
-      socket.emit("identify", { role: "control", deviceId: socket.id });
-    });
+    // Persistente Geräte-ID
+    let deviceId = localStorage.getItem("deviceId");
+    if (!deviceId) {
+      deviceId = crypto.randomUUID();
+      localStorage.setItem("deviceId", deviceId);
+    }
+    socket.emit("identify", { role: "control", deviceId });
 
-    const btn = document.getElementById("laserBtn");
-    let drawing = false;
-    let zeroA = null, zeroB = null;
-    let permRequested = false;
-    let lastAlpha = 0, lastBeta = 0;
+    const permBtn   = document.getElementById("permBtn");
+    const hueSlider = document.getElementById("hue");
+    const hueVal    = document.getElementById("hueVal");
+    const intSlider = document.getElementById("intensity");
+    const intVal    = document.getElementById("intVal");
+    const preview   = document.getElementById("preview");
+    const laserBtn  = document.getElementById("laserBtn");
 
-    // Immer DeviceOrientation-Events registrieren
-    window.addEventListener("deviceorientation", ev => {
-      lastAlpha = ev.alpha;
-      lastBeta = ev.beta;
-      if (!drawing || zeroA === null) return;
+    let isDrawing = false;
+    let hue       = 0;
+    let intensity = 50;
+    let colorHSL  = `hsl(0,100%,50%)`;
 
-      let dA = lastAlpha - zeroA;
-      if (dA > 180) dA -= 360;
-      if (dA < -180) dA += 360;
-      let dB = lastBeta - zeroB;
-
-      // Begrenzung der Neigungswerte auf +/-20°
-      dA = Math.max(-20, Math.min(20, dA));
-      dB = Math.max(-20, Math.min(20, dB));
-
-      const x = (dA + 20) / 40;
-      const y = 1 - ((dB + 20) / 40);
-
-      socket.emit("draw", { x, y, deviceId: socket.id });
-    });
-
-    // Touchstart: Permission anfragen und Zeichnen starten
-    btn.addEventListener("touchstart", async e => {
-      e.preventDefault();
-      if (!permRequested && DeviceOrientationEvent?.requestPermission) {
-        permRequested = true;
+    // Gyro-Permission anfordern
+    permBtn.addEventListener("click", async () => {
+      if (typeof DeviceOrientationEvent.requestPermission === "function") {
         try {
-          const state = await DeviceOrientationEvent.requestPermission();
-          if (state !== "granted") {
-            alert("Gyroskop-Zugriff verweigert – ohne ihn kann kein Laserpunkt gesendet werden.");
-            return;
+          const res = await DeviceOrientationEvent.requestPermission();
+          if (res === "granted") {
+            initGyro();
+            permBtn.style.display = "none";
+          } else {
+            alert("Gyro-Zugriff verweigert");
           }
         } catch (err) {
-          console.warn("Permission-Request fehlgeschlagen:", err);
-          return;
+          console.error(err);
         }
+      } else {
+        initGyro();
+        permBtn.style.display = "none";
       }
-      drawing = true;
-      zeroA = lastAlpha;
-      zeroB = lastBeta;
-    }, { passive: false });
+    });
 
-    // Touchend: Zeichnen stoppen
-    btn.addEventListener("touchend", e => {
+    function initGyro() {
+      window.addEventListener("deviceorientation", sendOri);
+    }
+
+    function sendOri(e) {
+      if (e.alpha == null || e.beta == null) return;
+      socket.emit("motion", {
+        alpha:      e.alpha,
+        beta:       e.beta,
+        color:      colorHSL,
+        isDrawing,
+        deviceId
+      });
+    }
+
+    // Slider-Hintergründe
+    function setHueBackground() {
+      hueSlider.style.background =
+        "linear-gradient(to right, " +
+        "hsl(0,100%,50%), hsl(60,100%,50%), hsl(120,100%,50%), " +
+        "hsl(180,100%,50%), hsl(240,100%,50%), hsl(300,100%,50%), hsl(360,100%,50%)" +
+        ")";
+    }
+    function setIntensityBackground() {
+      const mid = `hsl(${hue},100%,50%)`;
+      intSlider.style.background =
+        `linear-gradient(to right, black, ${mid}, white)`;
+    }
+
+    function updateColor() {
+      hue       = +hueSlider.value;
+      intensity = +intSlider.value;
+      hueVal.textContent = hue + "°";
+      intVal.textContent = intensity + " %";
+      colorHSL = `hsl(${hue},100%,${intensity}%)`;
+      preview.style.background = colorHSL;
+      setIntensityBackground();
+    }
+
+    setHueBackground();
+    setIntensityBackground();
+    updateColor();
+
+    hueSlider.addEventListener("input", updateColor);
+    intSlider.addEventListener("input", updateColor);
+
+    laserBtn.addEventListener("touchstart", e => {
       e.preventDefault();
-      drawing = false;
-    }, { passive: false });
+      isDrawing = true;
+    });
+    laserBtn.addEventListener("touchend", e => {
+      e.preventDefault();
+      isDrawing = false;
+    });
+
+    // Kontextmenü unterdrücken
+    document.addEventListener("contextmenu", e => e.preventDefault());
   </script>
 </body>
 </html>
