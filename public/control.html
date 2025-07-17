@@ -47,7 +47,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.2 Control</div>
+  <div id="version">v1.3 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -56,24 +56,19 @@
     const socket = io();
     socket.on('connect', () => {
       socket.emit('identify', { role: 'control', deviceId: socket.id });
-      
+      socket.emit('request-settings');
     });
 
     // Globale Einstellungen aus Admin
     let maxHor = 20;
     let maxVer = 20;
 
+    // Empfang initialer und aktualisierter Settings
     socket.on('settings', ({ maxHor: h, maxVer: v }) => {
       maxHor = h;
       maxVer = v;
     });
-    // Fallback für direkten Update
     socket.on('update-settings', ({ maxHor: h, maxVer: v }) => {
-      maxHor = h;
-      maxVer = v;
-    });
-    socket.emit('request-settings');
-     ({ maxHor: h, maxVer: v }) => {
       maxHor = h;
       maxVer = v;
     });
@@ -105,9 +100,9 @@
     });
 
     window.addEventListener('deviceorientation', ev => {
-      // Verwende gamma für horizontale Neigung und beta für vertikale
-      lastGamma = ev.gamma; // [-90,90]
-      lastBeta  = ev.beta;  // [-180,180]
+      // gamma für horizontal, beta für vertikal
+      lastGamma = ev.gamma;
+      lastBeta  = ev.beta;
       if (!drawing) return;
 
       let dH = lastGamma - zeroGamma;
@@ -115,6 +110,7 @@
       // Clamp nach Admin-Werten
       dH = Math.max(-maxHor, Math.min(maxHor, dH));
       dV = Math.max(-maxVer, Math.min(maxVer, dV));
+
       // Normierung
       const x = (dH + maxHor) / (2 * maxHor);
       const y = 1 - ((dV + maxVer) / (2 * maxVer));
