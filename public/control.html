@@ -59,6 +59,7 @@
       socket.emit('request-settings');
     });
 
+    // Globale Einstellungen aus Admin
     let maxHor = 20;
     let maxVer = 20;
 
@@ -69,8 +70,8 @@
 
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let drawing = false, zeroA = 0, zeroB = 0;
-    let lastAlpha = 0, lastBeta = 0;
+    let drawing = false, zeroGamma = 0, zeroBeta = 0;
+    let lastGamma = 0, lastBeta = 0;
 
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
@@ -84,8 +85,8 @@
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
-      zeroA = lastAlpha;
-      zeroB = lastBeta;
+      zeroGamma = lastGamma;
+      zeroBeta  = lastBeta;
     }, { passive: false });
 
     laserBtn.addEventListener('touchend', e => {
@@ -94,24 +95,23 @@
     });
 
     window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha;
-      lastBeta  = ev.beta;
+      // Verwende gamma für horizontale Neigung und beta für vertikale
+      lastGamma = ev.gamma; // [-90,90]
+      lastBeta  = ev.beta;  // [-180,180]
       if (!drawing) return;
 
-      let dA = lastAlpha - zeroA;
-      if (dA > 180)  dA -= 360;
-      if (dA < -180) dA += 360;
-      let dB = lastBeta - zeroB;
-
-      dA = Math.max(-maxHor, Math.min(maxHor, dA));
-      dB = Math.max(-maxVer, Math.min(maxVer, dB));
-
-      const x = 1 - ((dA + maxHor) / (2 * maxHor));
-      const y = 1 - ((dB + maxVer) / (2 * maxVer));
-
+      let dH = lastGamma - zeroGamma;
+      let dV = lastBeta  - zeroBeta;
+      // Clamp nach Admin-Werten
+      dH = Math.max(-maxHor, Math.min(maxHor, dH));
+      dV = Math.max(-maxVer, Math.min(maxVer, dV));
+      // Normierung
+      const x = (dH + maxHor) / (2 * maxHor);
+      const y = 1 - ((dV + maxVer) / (2 * maxVer));
       socket.emit('draw', { x, y, deviceId: socket.id });
     });
 
+    // iOS-Fallback
     window.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         await DeviceOrientationEvent.requestPermission().catch(console.warn);
