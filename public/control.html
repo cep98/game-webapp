@@ -56,7 +56,7 @@
     const socket = io();
     socket.on('connect', () => {
       socket.emit('identify', { role: 'control', deviceId: socket.id });
-      socket.emit('request-settings');
+      
     });
 
     // Globale Einstellungen aus Admin
@@ -64,6 +64,16 @@
     let maxVer = 20;
 
     socket.on('settings', ({ maxHor: h, maxVer: v }) => {
+      maxHor = h;
+      maxVer = v;
+    });
+    // Fallback für direkten Update
+    socket.on('update-settings', ({ maxHor: h, maxVer: v }) => {
+      maxHor = h;
+      maxVer = v;
+    });
+    socket.emit('request-settings');
+     ({ maxHor: h, maxVer: v }) => {
       maxHor = h;
       maxVer = v;
     });
