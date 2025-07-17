@@ -38,12 +38,12 @@
     };
 
     // Konstanten
-    const FRICTION        = 0.995;
-    const ANGULAR_FRICTION= 0.98;
-    const BOUNCE          = 0.8;
-    const BASE_STRENGTH   = 0.3;
-    const SPEED_SCALE     = 0.05;
-    const PTR_TTL         = 500;
+    const FRICTION         = 0.995;
+    const ANGULAR_FRICTION = 0.95;   // Höhere Dämpfung für trägeren Spin
+    const BOUNCE           = 0.8;
+    const BASE_STRENGTH    = 0.3;
+    const SPEED_SCALE      = 0.05;
+    const PTR_TTL          = 500;
 
     // Ball-Grafik
     const ballImg = new Image();
@@ -115,22 +115,19 @@
           ball.vx += dx * strength;
           ball.vy += dy * strength;
           // Spin: Kreuzprodukt Radius-Vektor und Berührungsrichtung
-          // Radius-Vektor vom Ball-Mittelpunkt zum Kontaktpunkt
           const rx = midx - ball.x;
           const ry = midy - ball.y;
-          // Berührungsrichtung = tangent to normal => perpendicular to (dx,dy)
           const tx = -dy;
           const ty = dx;
-          // Winkel-Impuls je nach Richtung und Stärke
-          const spinImpulse = (rx * ty - ry * tx) * strength * 0.02;
+          // Reduzierter Winkel-Impuls für trägeren Spin
+          const spinImpulse = (rx * ty - ry * tx) * strength * 0.005;
           ball.angularVelocity += spinImpulse;
         }
       }
 
-      // Translation
+      // Translation & Rotation
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
-      // Rotation
       ball.angle += ball.angularVelocity * dt;
 
       // Kollision mit Wänden
@@ -139,7 +136,7 @@
       if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
 
-      // Reibung
+      // Reibung & Dämpfung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
       ball.angularVelocity *= ANGULAR_FRICTION;
@@ -147,7 +144,6 @@
 
     function draw() {
       ctx.clearRect(0, 0, W, H);
-      // Ball mit Rotation zeichnen
       if (ballImg.complete) {
         ctx.save();
         ctx.translate(ball.x, ball.y);
@@ -155,7 +151,6 @@
         ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
         ctx.restore();
       }
-      // Pointers
       for (let id in pointers) {
         const p = pointers[id];
         ctx.beginPath();
