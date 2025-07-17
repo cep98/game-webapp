@@ -8,35 +8,57 @@ const io      = require('socket.io')(http);
 // Statische Dateien aus /public
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Game-Frontend
-app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'game.html'));
-});
+// Frontends
+app.get('/',       (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
+app.get('/control',(req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
+app.get('/admin',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
-// Control-Frontend
-app.get('/control', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'control.html'));
-});
+const clients = {}; // socket.id → { role, deviceId, ip }
 
-// Admin-Frontend
-app.get('/admin', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
-});
+function broadcastClientList() {
+  const list = Object.values(clients).map(c => ({
+    type:     c.role,
+    deviceId: c.deviceId,
+    ip:       c.ip
+  }));
+  // nur an Admins senden, Event-Name muss "client-list" sein
+  for (let id in clients) {
+    if (clients[id].role === 'admin') {
+      io.to(id).emit('client-list', list);
+    }
+  }
+}
 
 io.on('connection', socket => {
-  console.log(`User connected: ${socket.id}`);
-
-  socket.on('gyro', data => {
-    socket.broadcast.emit('gyro', { id: socket.id, ...data });
+  const addr = socket.handshake.address;
+  socket.on('identify', ({ role, deviceId }) => {
+    clients[socket.id] = { role, deviceId, ip: addr };
+    broadcastClientList();
   });
 
-  socket.on('laser', data => {
-    io.emit('laser', { id: socket.id, angle: data.angle });
+  // Control → Game
+  socket.on('draw', data => {
+    socket.broadcast.emit('draw', data);
+  });
+
+  // Admin-Clearing
+  socket.on('clear', () => {
+    socket.broadcast.emit('clear');
+  });
+
+  // Admin-Kick
+  socket.on('kick', ({ deviceId }) => {
+    // find matching socket and disconnect
+    for (let id in clients) {
+      if (clients[id].deviceId === deviceId) {
+        io.sockets.sockets.get(id)?.disconnect(true);
+      }
+    }
   });
 
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-    io.emit('disconnectClient', socket.id);
+    delete clients[socket.id];
+    broadcastClientList();
   });
 });
 
