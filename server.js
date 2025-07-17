@@ -1,36 +1,39 @@
 // server.js
 const express = require('express');
-const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http);
+const path    = require('path');
+const app     = express();
+const http    = require('http').createServer(app);
+const io      = require('socket.io')(http);
 
-// Statische Dateien aus /public ausliefern (z.B. ball.png)
-app.use(express.static('public'));
+// Statische Dateien aus /public
+app.use(express.static(path.join(__dirname, 'public')));
 
-// Spiel-Frontend
+// Game-Frontend
 app.get('/', (req, res) => {
-  res.sendFile(__dirname + '/game.html');
+  res.sendFile(path.join(__dirname, 'public', 'game.html'));
 });
 
-// Steuerung-Frontend
+// Control-Frontend
 app.get('/control', (req, res) => {
-  res.sendFile(__dirname + '/control.html');
+  res.sendFile(path.join(__dirname, 'public', 'control.html'));
 });
 
-io.on('connection', (socket) => {
+// Admin-Frontend
+app.get('/admin', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+io.on('connection', socket => {
   console.log(`User connected: ${socket.id}`);
 
-  // Gyro-Daten von Control-Clients weiterleiten
   socket.on('gyro', data => {
     socket.broadcast.emit('gyro', { id: socket.id, ...data });
   });
 
-  // Laser-Schuss von Control-Clients broadcasten
   socket.on('laser', data => {
     io.emit('laser', { id: socket.id, angle: data.angle });
   });
 
-  // Bei Trennung aufräumen
   socket.on('disconnect', () => {
     console.log(`User disconnected: ${socket.id}`);
     io.emit('disconnectClient', socket.id);
@@ -38,6 +41,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => {
-  console.log(`Listening on *:${PORT}`);
-});
+http.listen(PORT, () => console.log(`Listening on *:${PORT}`));
