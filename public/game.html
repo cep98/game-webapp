@@ -37,8 +37,8 @@
     const FRICTION         = 0.995;
     const ANGULAR_FRICTION = 0.95;
     const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 1.0;    // Erhöhter Basisimpuls
-    const SPEED_SCALE      = 0.002;  // Skalierung für Geschwindigkeitseinfluss
+    const BASE_STRENGTH    = 0.5;    // Angepasster Basisimpuls
+    const SPEED_SCALE      = 0.001;  // Angepasste Skalierung für Geschwindigkeitseinfluss
     const PTR_TTL          = 500;
     const PTR_R            = 16;
 
@@ -78,14 +78,12 @@
       }
     }
 
-    // Kollision Segment vs. Kreis
     function update(dt) {
       const now = performance.now();
       cleanup(now);
       for (let id in pointers) {
         const p = pointers[id];
         const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
-        // Stichproben
         const steps = Math.max(Math.ceil(segLen / (ball.r + PTR_R)), 5);
         let hit = false;
         for (let i = 0; i <= steps; i++) {
@@ -98,20 +96,17 @@
           }
         }
         if (hit) {
-          // Mit Spin
           const midx = (p.px + p.sx) * 0.5;
           const midy = (p.py + p.sy) * 0.5;
           let dx = ball.x - midx;
           let dy = ball.y - midy;
           const len = Math.hypot(dx, dy) || 1;
           dx /= len; dy /= len;
-          // Geschwindigkeit in px/s
           const segTimeMs = Math.max(p.t - p.pt, 1);
           const speedPxS  = segLen * 1000 / segTimeMs;
           const strength  = BASE_STRENGTH + speedPxS * SPEED_SCALE;
           ball.vx += dx * strength;
           ball.vy += dy * strength;
-          // Spin
           const rx = midx - ball.x;
           const ry = midy - ball.y;
           const tx = -dy;
@@ -121,11 +116,9 @@
         }
         p.pt = p.t;
       }
-      // Bewegung
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
-      // Wände
       if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
@@ -154,9 +147,10 @@
     (function loop(now) {
       const dt = (now - last) / 16.67;
       last = now;
-      update(dt); draw(); requestAnimationFrame(loop);
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
     })(last);
   </script>
 </body>
 </html>
-
