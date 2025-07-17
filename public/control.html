@@ -5,30 +5,34 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Control</title>
   <style>
-    body {
+    html, body {
       margin: 0;
+      padding: 0;
+      height: 100%;
       background: #222;
       color: #fff;
+      font-family: sans-serif;
+    }
+    body {
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
-      font-family: sans-serif;
+      overflow: hidden;
     }
     #version {
       position: absolute;
       top: 10px;
       right: 10px;
       color: #fff;
-      opacity: 0.6;
+      opacity: 0.8;
       font-size: 0.9em;
     }
     #gyroBtn, #laserBtn {
       font-size: 1.2em;
       padding: 0.5em 1em;
       margin: 0.5em;
-      color: #fff !important; /* Text immer weiß */
+      color: #fff !important;
       background: #444;
       border: none;
       border-radius: 4px;
@@ -55,11 +59,9 @@
       socket.emit('request-settings');
     });
 
-    // Dynamische Einstellungen
     let maxHor = 20;
     let maxVer = 20;
 
-    // Empfang der aktuellen Settings
     socket.on('settings', ({ maxHor: h, maxVer: v }) => {
       maxHor = h;
       maxVer = v;
@@ -96,24 +98,20 @@
       lastBeta  = ev.beta;
       if (!drawing) return;
 
-      // Drehung horizontal (A) und vertikal (B)
       let dA = lastAlpha - zeroA;
       if (dA > 180)  dA -= 360;
       if (dA < -180) dA += 360;
       let dB = lastBeta - zeroB;
 
-      // Clamping nach Admin-Werten
       dA = Math.max(-maxHor, Math.min(maxHor, dA));
       dB = Math.max(-maxVer, Math.min(maxVer, dB));
 
-      // Normieren auf [0…1]
       const x = 1 - ((dA + maxHor) / (2 * maxHor));
       const y = 1 - ((dB + maxVer) / (2 * maxVer));
 
       socket.emit('draw', { x, y, deviceId: socket.id });
     });
 
-    // iOS-Fallback für Permission
     window.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         await DeviceOrientationEvent.requestPermission().catch(console.warn);
