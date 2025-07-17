@@ -2,101 +2,113 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <title>LaserGame</title>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Game</title>
   <style>
-    body { margin:0; overflow:hidden; }
-    canvas { display:block; }
+    body { margin:0; background:#000; overflow:hidden; }
+    canvas { display:block; margin:auto; background:#000; }
+    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; }
   </style>
 </head>
 <body>
-<canvas id="canvas"></canvas>
-<script src="/socket.io/socket.io.js"></script>
-<script>
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  let w, h;
-  function resize() {
-    w = canvas.width = window.innerWidth;
-    h = canvas.height = window.innerHeight;
-  }
-  window.addEventListener('resize', resize);
-  resize();
+  <div id="version">v1.0 Game</div>
+  <canvas id="canvas" width="1024" height="1024"></canvas>
 
-  const socket = io();
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    socket.on("connect", () => {
+      socket.emit("identify", { role:"display", deviceId: null });
+    });
 
-  // Ball-Objekt
-  const ball = { x: w/2, y: h/2, vx: 0, vy: 0, r: 20 };
-  const friction = 0.99;
+    const c   = document.getElementById("canvas"),
+          ctx = c.getContext("2d"),
+          W   = c.width, H = c.height;
 
-  // Ball-Grafik laden
-  const ballImg = new Image();
-  ballImg.src = '/ball.png';
+    // Ball‐Objekt
+    let ball = { x:W/2, y:H/2, vx:0, vy:0, r:20 };
 
-  // Andere Spieler
-  const clients = {};
+    const FRICTION     = 0.995,
+          BOUNCE       = 0.8,
+          HIT_STRENGTH = 0.3,
+          PTR_R        = 8,
+          PTR_TTL      = 500;
 
-  socket.on('gyro', data => {
-    if (!clients[data.id]) {
-      clients[data.id] = { alpha: data.alpha, beta: data.beta };
-    } else {
-      clients[data.id].alpha = data.alpha;
-      clients[data.id].beta = data.beta;
-    }
-  });
+    const pointers = {}; // deviceId → { x,y,t }
 
-  socket.on('disconnectClient', id => {
-    delete clients[id];
-  });
+    // Ball‐Grafik
+    const ballImg = new Image();
+    ballImg.src   = "/ball.png";
 
-  socket.on('laser', data => {
-    // Impuls hinzufügen
-    const speed = 5;
-    ball.vx += speed * Math.cos(data.angle);
-    ball.vy += speed * Math.sin(data.angle);
-  });
+    socket.on("draw", ({ x, y, deviceId }) => {
+      pointers[deviceId] = { x:x*W, y:y*H, t: performance.now() };
+    });
 
-  function update() {
-    ball.x += ball.vx;
-    ball.y += ball.vy;
-
-    // Kollision mit Rändern
-    if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx; }
-    if (ball.x + ball.r > w) { ball.x = w - ball.r; ball.vx = -ball.vx; }
-    if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy; }
-    if (ball.y + ball.r > h) { ball.y = h - ball.r; ball.vy = -ball.vy; }
-
-    // Reibung
-    ball.vx *= friction;
-    ball.vy *= friction;
-  }
-
-  let lastTime = performance.now();
-  function loop(now) {
-    const dt = (now - lastTime) / 1000;
-    lastTime = now;
-
-    update(dt);
-    ctx.clearRect(0, 0, w, h);
-
-    // Ball zeichnen (Grafik oder Fallback-Kreis)
-    if (ballImg.complete) {
-      ctx.drawImage(ballImg,
-        ball.x - ball.r,
-        ball.y - ball.r,
-        ball.r * 2,
-        ball.r * 2
-      );
-    } else {
-      ctx.fillStyle = '#f90';
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, ball.r, 0, 2*Math.PI);
-      ctx.fill();
+    function cleanup(now) {
+      for (let id in pointers) {
+        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
+      }
     }
 
-    requestAnimationFrame(loop);
-  }
-  requestAnimationFrame(loop);
-</script>
+    function update(dt) {
+      const now = performance.now();
+      cleanup(now);
+      // Pointer‑Kollision
+      for (let id in pointers) {
+        const p = pointers[id];
+        const dx = ball.x - p.x,
+              dy = ball.y - p.y,
+              d  = Math.hypot(dx,dy);
+        if (d < ball.r + PTR_R) {
+          const nx = dx/d, ny = dy/d;
+          ball.vx += nx*HIT_STRENGTH;
+          ball.vy += ny*HIT_STRENGTH;
+        }
+      }
+      // Bewegung
+      ball.x += ball.vx*dt;
+      ball.y += ball.vy*dt;
+      // Wand‑Abprall
+      if (ball.x - ball.r < 0) { ball.x=ball.r; ball.vx=-ball.vx*BOUNCE; }
+      if (ball.x + ball.r > W) { ball.x=W-ball.r; ball.vx=-ball.vx*BOUNCE; }
+      if (ball.y - ball.r < 0) { ball.y=ball.r; ball.vy=-ball.vy*BOUNCE; }
+      if (ball.y + ball.r > H) { ball.y=H-ball.r; ball.vy=-ball.vy*BOUNCE; }
+      // Reibung
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+    }
+
+    function draw() {
+      ctx.clearRect(0,0,W,H);
+      // Ball
+      if (ballImg.complete) {
+        ctx.drawImage(
+          ballImg,
+          ball.x - ball.r,
+          ball.y - ball.r,
+          ball.r*2,
+          ball.r*2
+        );
+      }
+      // Pointers
+      for (let id in pointers) {
+        const p = pointers[id];
+        ctx.beginPath();
+        ctx.fillStyle = "#0cf";
+        ctx.arc(p.x,p.y,PTR_R,0,2*Math.PI);
+        ctx.fill();
+      }
+    }
+
+    let last = performance.now();
+    (function loop(now){
+      const dt = (now - last)/16.67;
+      last = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    })(last);
+  </script>
 </body>
 </html>
