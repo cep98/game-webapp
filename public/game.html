@@ -37,8 +37,8 @@
     const FRICTION         = 0.995;
     const ANGULAR_FRICTION = 0.95;
     const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.3;
-    const SPEED_SCALE      = 0.05;
+    const BASE_STRENGTH    = 1.0;    // Erhöhter Basisimpuls
+    const SPEED_SCALE      = 0.002;  // Skalierung für Geschwindigkeitseinfluss
     const PTR_TTL          = 500;
     const PTR_R            = 16;
 
@@ -62,15 +62,12 @@
       const rawY = y * H;
       const prev = pointers[deviceId];
       if (prev) {
-        // Previous smoothed becomes new prev
         const prevSX = prev.sx;
         const prevSY = prev.sy;
-        // Compute new smoothed
         const sx = prevSX + (rawX - prevSX) * (1 - smoothing);
         const sy = prevSY + (rawY - prevSY) * (1 - smoothing);
         pointers[deviceId] = { sx, sy, px: prevSX, py: prevSY, t: now, pt: prev.t };
       } else {
-        // Erstes Event: initialize both
         pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
       }
     });
@@ -82,28 +79,13 @@
     }
 
     // Kollision Segment vs. Kreis
-    function segmentCircleCollision(x1, y1, x2, y2, cx, cy, r) {
-      const vx = x2 - x1;
-      const vy = y2 - y1;
-      const wx = cx - x1;
-      const wy = cy - y1;
-      const proj = (wx * vx + wy * vy) / (vx*vx + vy*vy);
-      const t = Math.max(0, Math.min(1, proj));
-      const ix = x1 + vx * t;
-      const iy = y1 + vy * t;
-      const dx = cx - ix;
-      const dy = cy - iy;
-      return dx*dx + dy*dy <= r*r;
-    }
-
     function update(dt) {
       const now = performance.now();
       cleanup(now);
       for (let id in pointers) {
         const p = pointers[id];
-        // Segment start/end = p.px,p.py -> p.sx,p.sy
         const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
-        // Determine sampling steps, ensure min resolution
+        // Stichproben
         const steps = Math.max(Math.ceil(segLen / (ball.r + PTR_R)), 5);
         let hit = false;
         for (let i = 0; i <= steps; i++) {
@@ -116,20 +98,20 @@
           }
         }
         if (hit) {
-          // Berechne Impuls & Spin an Trefferpunkt
-          const dirX = p.sx - p.px;
-          const dirY = p.sy - p.py;
-          const midx = p.px + dirX * 0.5;
-          const midy = p.py + dirY * 0.5;
+          // Mit Spin
+          const midx = (p.px + p.sx) * 0.5;
+          const midy = (p.py + p.sy) * 0.5;
           let dx = ball.x - midx;
           let dy = ball.y - midy;
           const len = Math.hypot(dx, dy) || 1;
           dx /= len; dy /= len;
-          const segTime = Math.max(p.t - p.pt, 1);
-          const speed   = segLen / segTime;
-          const strength= BASE_STRENGTH + speed * SPEED_SCALE;
+          // Geschwindigkeit in px/s
+          const segTimeMs = Math.max(p.t - p.pt, 1);
+          const speedPxS  = segLen * 1000 / segTimeMs;
+          const strength  = BASE_STRENGTH + speedPxS * SPEED_SCALE;
           ball.vx += dx * strength;
           ball.vy += dy * strength;
+          // Spin
           const rx = midx - ball.x;
           const ry = midy - ball.y;
           const tx = -dy;
@@ -137,14 +119,13 @@
           const spinImp = (rx * ty - ry * tx) * strength * 0.005;
           ball.angularVelocity += spinImp;
         }
-        // Aktualisiere prev time
         p.pt = p.t;
       }
-      // Translation & Rotation
+      // Bewegung
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
-      // Wandabprall
+      // Wände
       if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
@@ -161,22 +142,19 @@
         ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
         ctx.restore();
       }
-      // Zeichne Laserpunkte
       ctx.fillStyle = '#0cf';
       for (let id in pointers) {
         const p = pointers[id];
-        ctx.beginPath();
-        ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI);
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI);
         ctx.fill();
       }
     }
 
     let last = performance.now();
     (function loop(now) {
-      const dt = (now - last) / 16.67; last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
+      const dt = (now - last) / 16.67;
+      last = now;
+      update(dt); draw(); requestAnimationFrame(loop);
     })(last);
   </script>
 </body>
