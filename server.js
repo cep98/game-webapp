@@ -5,62 +5,55 @@ const app     = express();
 const http    = require('http').createServer(app);
 const io      = require('socket.io')(http);
 
-// Statische Dateien aus /public
+// Statische Auslieferung
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Frontends
-app.get('/',       (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
-app.get('/control',(req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
-app.get('/admin',  (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
+// Defaults für Settings
+let settings = {
+  maxHor:     20,
+  maxVer:     20,
+  smoothing:  0.5
+};
 
-const clients = {}; // socket.id → { role, deviceId, ip }
+// Routen
+app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
+app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
+app.get('/admin',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
-function broadcastClientList() {
-  const list = Object.values(clients).map(c => ({
-    type:     c.role,
-    deviceId: c.deviceId,
-    ip:       c.ip
-  }));
-  // nur an Admins senden, Event-Name muss "client-list" sein
-  for (let id in clients) {
-    if (clients[id].role === 'admin') {
-      io.to(id).emit('client-list', list);
-    }
-  }
-}
+const clients = {};
 
 io.on('connection', socket => {
-  const addr = socket.handshake.address;
+  // Identifikation
   socket.on('identify', ({ role, deviceId }) => {
-    clients[socket.id] = { role, deviceId, ip: addr };
-    broadcastClientList();
+    clients[socket.id] = { role, deviceId };
   });
 
-  // Control → Game
-  socket.on('draw', data => {
-    socket.broadcast.emit('draw', data);
+  // Admin: send settings
+  socket.on('request-settings', () => {
+    socket.emit('settings', settings);
   });
 
-  // Admin-Clearing
-  socket.on('clear', () => {
-    socket.broadcast.emit('clear');
-  });
-
-  // Admin-Kick
-  socket.on('kick', ({ deviceId }) => {
-    // find matching socket and disconnect
+  // Admin: update settings
+  socket.on('update-settings', data => {
+    // Werte übernehmen
+    settings = { ...settings, ...data };
+    // An alle DisplaYs senden
     for (let id in clients) {
-      if (clients[id].deviceId === deviceId) {
-        io.sockets.sockets.get(id)?.disconnect(true);
+      if (clients[id].role === 'display') {
+        io.to(id).emit('settings', settings);
       }
     }
   });
 
+  // Control-Input weiterleiten
+  socket.on('draw', data => socket.broadcast.emit('draw', data));
+
+  // Disconnect
   socket.on('disconnect', () => {
     delete clients[socket.id];
-    broadcastClientList();
   });
 });
 
+// Start
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Listening on *:${PORT}`));
+http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
