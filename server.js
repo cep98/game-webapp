@@ -1,66 +1,43 @@
-const express = require("express");
-const app     = express();
-const http    = require("http").createServer(app);
-const io      = require("socket.io")(http);
+// server.js
+const express = require('express');
+const app = express();
+const http = require('http').createServer(app);
+const io = require('socket.io')(http);
 
-app.use(express.static("public"));
+// Statische Dateien aus /public ausliefern (z.B. ball.png)
+app.use(express.static('public'));
 
-const clients = {}; // socket.id → { role, deviceId, ip }
+// Spiel-Frontend
+app.get('/', (req, res) => {
+  res.sendFile(__dirname + '/game.html');
+});
 
-function broadcastClientList() {
-  const list = Object.values(clients).map(c => ({
-    type:     c.role,      // "control", "display" (Game), "admin"
-    deviceId: c.deviceId,
-    ip:       c.ip
-  }));
-  // nur an Admins senden
-  for (let sid in clients) {
-    if (clients[sid].role === "admin") {
-      io.to(sid).emit("client-list", list);
-    }
-  }
-}
+// Steuerung-Frontend
+app.get('/control', (req, res) => {
+  res.sendFile(__dirname + '/control.html');
+});
 
-io.on("connection", socket => {
-  const ip = socket.handshake.address;
-  clients[socket.id] = { role: null, deviceId: null, ip };
+io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.id}`);
 
-  socket.on("identify", ({ role, deviceId }) => {
-    clients[socket.id].role     = role;
-    clients[socket.id].deviceId = deviceId;
-    broadcastClientList();
+  // Gyro-Daten von Control-Clients weiterleiten
+  socket.on('gyro', data => {
+    socket.broadcast.emit('gyro', { id: socket.id, ...data });
   });
 
-  // vom Control einlaufende Pointer‐Daten
-  socket.on("draw", data => {
-    // data: { x, y, deviceId }
-    socket.broadcast.emit("draw", data);
+  // Laser-Schuss von Control-Clients broadcasten
+  socket.on('laser', data => {
+    io.emit('laser', { id: socket.id, angle: data.angle });
   });
 
-  // Admin löscht Canvas (Game + ggf. Display)
-  socket.on("clear", () => {
-    io.emit("clear");
-  });
-
-  // Admin kickt ein Control‐Gerät
-  socket.on("kick", ({ deviceId }) => {
-    for (let sid in clients) {
-      if (clients[sid].deviceId === deviceId && clients[sid].role === "control") {
-        io.sockets.sockets.get(sid)?.disconnect(true);
-        break;
-      }
-    }
-    broadcastClientList();
-  });
-
-  socket.on("disconnect", () => {
-    delete clients[socket.id];
-    broadcastClientList();
+  // Bei Trennung aufräumen
+  socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.id}`);
+    io.emit('disconnectClient', socket.id);
   });
 });
 
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
-  console.log(`Server läuft auf Port ${PORT}`);
+  console.log(`Listening on *:${PORT}`);
 });
-
