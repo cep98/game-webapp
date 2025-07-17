@@ -26,15 +26,24 @@
     const W      = canvas.width;
     const H      = canvas.height;
 
-    // Ball-Objekt
-    let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20 };
+    // Ball-Objekt mit Rotation
+    let ball = {
+      x: W/2,
+      y: H/2,
+      vx: 0,
+      vy: 0,
+      r: 20,
+      angle: 0,
+      angularVelocity: 0
+    };
 
     // Konstanten
-    const FRICTION     = 0.995;
-    const BOUNCE       = 0.8;
-    const BASE_STRENGTH = 0.3;      // Basis-Impuls
-    const SPEED_SCALE  = 0.05;     // Skala für Geschwindigkeitseinfluss
-    const PTR_TTL      = 500;
+    const FRICTION        = 0.995;
+    const ANGULAR_FRICTION= 0.98;
+    const BOUNCE          = 0.8;
+    const BASE_STRENGTH   = 0.3;
+    const SPEED_SCALE     = 0.05;
+    const PTR_TTL         = 500;
 
     // Ball-Grafik
     const ballImg = new Image();
@@ -63,14 +72,12 @@
       }
     });
 
-    // Alte Pointers entfernen
     function cleanup(now) {
       for (let id in pointers) {
         if (now - pointers[id].t > PTR_TTL) delete pointers[id];
       }
     }
 
-    // Kollision Liniensegment ↔ Kreis
     function segmentCircleCollision(x1, y1, x2, y2, cx, cy, r) {
       const vx = x2 - x1;
       const vy = y2 - y1;
@@ -85,51 +92,68 @@
       return (dx*dx + dy*dy) < r*r;
     }
 
-    // Update-Loop
     function update(dt) {
       const now = performance.now();
       cleanup(now);
-      // Kollision prüfen
+
       for (let id in pointers) {
         const p = pointers[id];
-        // Prüfen, ob Segment Ball trifft
         if (segmentCircleCollision(p.px, p.py, p.x, p.y, ball.x, ball.y, ball.r)) {
-          // Richtung vom Segment-Mittelpunkt zum Ball
+          // Impulsrichtung
           const midx = (p.px + p.x) / 2;
           const midy = (p.py + p.y) / 2;
           let dx = ball.x - midx;
           let dy = ball.y - midy;
           const len = Math.hypot(dx, dy) || 1;
           dx /= len; dy /= len;
-          // Geschwindigkeit des Segments
+          // Segmentgeschwindigkeit
           const segDist = Math.hypot(p.x - p.px, p.y - p.py);
           const segTime = Math.max(p.t - p.pt, 1);
           const speed   = segDist / segTime;
-          // Impuls: Basis + Geschwindigkeitseinfluss
-          const strength = BASE_STRENGTH + speed * SPEED_SCALE;
+          const strength= BASE_STRENGTH + speed * SPEED_SCALE;
+          // Lineare Geschwindigkeit
           ball.vx += dx * strength;
           ball.vy += dy * strength;
+          // Spin: Kreuzprodukt Radius-Vektor und Berührungsrichtung
+          // Radius-Vektor vom Ball-Mittelpunkt zum Kontaktpunkt
+          const rx = midx - ball.x;
+          const ry = midy - ball.y;
+          // Berührungsrichtung = tangent to normal => perpendicular to (dx,dy)
+          const tx = -dy;
+          const ty = dx;
+          // Winkel-Impuls je nach Richtung und Stärke
+          const spinImpulse = (rx * ty - ry * tx) * strength * 0.02;
+          ball.angularVelocity += spinImpulse;
         }
       }
-      // Bewegung
+
+      // Translation
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
-      // Wand-Abprall
-      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; }
-      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; }
-      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; }
-      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; }
+      // Rotation
+      ball.angle += ball.angularVelocity * dt;
+
+      // Kollision mit Wänden
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
+
       // Reibung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
-    // Draw-Loop
     function draw() {
       ctx.clearRect(0, 0, W, H);
-      // Ball
+      // Ball mit Rotation zeichnen
       if (ballImg.complete) {
-        ctx.drawImage(ballImg, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
+        ctx.save();
+        ctx.translate(ball.x, ball.y);
+        ctx.rotate(ball.angle);
+        ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
+        ctx.restore();
       }
       // Pointers
       for (let id in pointers) {
