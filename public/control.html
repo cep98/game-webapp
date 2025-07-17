@@ -6,41 +6,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Control</title>
   <style>
-    body {
-      margin: 0;
-      background: #222;
-      color: #fff;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-    }
-    #laserBtn {
-      width: 100px;
-      height: 100px;
-      border-radius: 50%;
-      background: red;
-      border: none;
-      font-size: 1.2em;
-      color: #fff;
-      touch-action: none;
-      display: none; /* versteckt bis Gyro freigegeben */
-    }
-    #gyroBtn {
-      font-size: 1em;
-      padding: 0.5em 1em;
-    }
-    #version {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      opacity: 0.6;
-    }
+    body { margin:0; background:#222; color:#fff;
+           display:flex; flex-direction:column;
+           align-items:center; justify-content:center;
+           height:100vh; }
+    #laserBtn, #gyroBtn { font-size:1.2em; padding:0.5em 1em; margin:0.5em; }
+    #laserBtn { width:100px; height:100px; border-radius:50%; background:red; display:none; }
+    #version { position:absolute; top:10px; right:10px; opacity:0.6; }
   </style>
 </head>
 <body>
-  <div id="version">v1.0 Control</div>
+  <div id="version">v1.1 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -48,60 +24,63 @@
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify', { role: 'control', deviceId: socket.id });
+      socket.emit('identify',{ role:'control', deviceId: socket.id });
+      socket.emit('request-settings');
+    });
+
+    // Einstellungen
+    let maxHor=20, maxVer=20;
+
+    socket.on('settings', ({ maxHor: h, maxVer: v }) => {
+      maxHor = h;
+      maxVer = v;
     });
 
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let drawing = false, zeroA = null, zeroB = null;
-    let lastAlpha = 0, lastBeta = 0;
+    let drawing=false, zeroA=0, zeroB=0;
+    let lastAlpha=0, lastBeta=0;
 
-    // Gyro-Permission anfordern
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
-        if (perm !== 'granted') return alert('Gyro‑Zugriff benötigt!');
+        if (perm!=='granted') return alert('Gyro‑Zugriff benötigt!');
       }
       gyroBtn.style.display  = 'none';
       laserBtn.style.display = 'block';
     });
 
-    // Laser‑Button Touch-Handling
-    laserBtn.addEventListener('touchstart', e => {
+    laserBtn.addEventListener('touchstart', e=>{
       e.preventDefault();
-      drawing = true;
-      zeroA = lastAlpha;
-      zeroB = lastBeta;
-    }, { passive: false });
-
-    laserBtn.addEventListener('touchend', e => {
+      drawing=true;
+      zeroA=lastAlpha;
+      zeroB=lastBeta;
+    },{passive:false});
+    laserBtn.addEventListener('touchend', e=>{
       e.preventDefault();
-      drawing = false;
+      drawing=false;
     });
 
-    // Gyro‑Daten erfassen und senden (mit X-Achse invertiert)
-    window.addEventListener('deviceorientation', ev => {
+    window.addEventListener('deviceorientation', ev=>{
       lastAlpha = ev.alpha;
       lastBeta  = ev.beta;
-      if (!drawing || zeroA === null) return;
-
+      if (!drawing) return;
+      // Delta-Winkel
       let dA = lastAlpha - zeroA;
-      if (dA > 180)  dA -= 360;
-      if (dA < -180) dA += 360;
-
+      if (dA>180) dA-=360;
+      if (dA<-180) dA+=360;
       let dB = lastBeta - zeroB;
-
-      dA = Math.max(-20, Math.min(20, dA));
-      dB = Math.max(-20, Math.min(20, dB));
-
-      const x = 1 - ((dA + 20) / 40);
-      const y = 1 - ((dB + 20) / 40);
-
-      socket.emit('draw', { x, y, deviceId: socket.id });
+      // Begrenzen
+      dA = Math.max(-maxHor, Math.min(maxHor, dA));
+      dB = Math.max(-maxVer, Math.min(maxVer, dB));
+      // Normieren auf [0,1]
+      const x = 1 - ((dA + maxHor) / (2 * maxHor));
+      const y = 1 - ((dB + maxVer) / (2 * maxVer));
+      socket.emit('draw',{ x, y, deviceId: socket.id });
     });
 
-    // iOS-Fallback für Permission
-    window.addEventListener('click', async () => {
+    // iOS-Fallback
+    window.addEventListener('click', async ()=>{
       if (DeviceOrientationEvent?.requestPermission) {
         await DeviceOrientationEvent.requestPermission().catch(console.warn);
       }
