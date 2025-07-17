@@ -1,22 +1,49 @@
-<!-- public/control.html -->
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Control</title>
   <style>
-    body { margin:0; background:#222; color:#fff;
-           display:flex; flex-direction:column;
-           align-items:center; justify-content:center;
-           height:100vh; }
-    #laserBtn, #gyroBtn { font-size:1.2em; padding:0.5em 1em; margin:0.5em; }
-    #laserBtn { width:100px; height:100px; border-radius:50%; background:red; display:none; }
-    #version { position:absolute; top:10px; right:10px; opacity:0.6; }
+    body {
+      margin: 0;
+      background: #222;
+      color: #fff;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-family: sans-serif;
+    }
+    #version {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      color: #fff;
+      opacity: 0.6;
+      font-size: 0.9em;
+    }
+    #gyroBtn, #laserBtn {
+      font-size: 1.2em;
+      padding: 0.5em 1em;
+      margin: 0.5em;
+      color: #fff !important; /* Text immer weiß */
+      background: #444;
+      border: none;
+      border-radius: 4px;
+    }
+    #laserBtn {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: red;
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <div id="version">v1.1 Control</div>
+  <div id="version">v1.2 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -24,13 +51,15 @@
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify',{ role:'control', deviceId: socket.id });
+      socket.emit('identify', { role: 'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    // Einstellungen
-    let maxHor=20, maxVer=20;
+    // Dynamische Einstellungen
+    let maxHor = 20;
+    let maxVer = 20;
 
+    // Empfang der aktuellen Settings
     socket.on('settings', ({ maxHor: h, maxVer: v }) => {
       maxHor = h;
       maxVer = v;
@@ -38,49 +67,54 @@
 
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let drawing=false, zeroA=0, zeroB=0;
-    let lastAlpha=0, lastBeta=0;
+    let drawing = false, zeroA = 0, zeroB = 0;
+    let lastAlpha = 0, lastBeta = 0;
 
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
-        if (perm!=='granted') return alert('Gyro‑Zugriff benötigt!');
+        if (perm !== 'granted') return alert('Gyro‑Zugriff benötigt!');
       }
       gyroBtn.style.display  = 'none';
       laserBtn.style.display = 'block';
     });
 
-    laserBtn.addEventListener('touchstart', e=>{
+    laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
-      drawing=true;
-      zeroA=lastAlpha;
-      zeroB=lastBeta;
-    },{passive:false});
-    laserBtn.addEventListener('touchend', e=>{
+      drawing = true;
+      zeroA = lastAlpha;
+      zeroB = lastBeta;
+    }, { passive: false });
+
+    laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
-      drawing=false;
+      drawing = false;
     });
 
-    window.addEventListener('deviceorientation', ev=>{
+    window.addEventListener('deviceorientation', ev => {
       lastAlpha = ev.alpha;
       lastBeta  = ev.beta;
       if (!drawing) return;
-      // Delta-Winkel
+
+      // Drehung horizontal (A) und vertikal (B)
       let dA = lastAlpha - zeroA;
-      if (dA>180) dA-=360;
-      if (dA<-180) dA+=360;
+      if (dA > 180)  dA -= 360;
+      if (dA < -180) dA += 360;
       let dB = lastBeta - zeroB;
-      // Begrenzen
+
+      // Clamping nach Admin-Werten
       dA = Math.max(-maxHor, Math.min(maxHor, dA));
       dB = Math.max(-maxVer, Math.min(maxVer, dB));
-      // Normieren auf [0,1]
+
+      // Normieren auf [0…1]
       const x = 1 - ((dA + maxHor) / (2 * maxHor));
       const y = 1 - ((dB + maxVer) / (2 * maxVer));
-      socket.emit('draw',{ x, y, deviceId: socket.id });
+
+      socket.emit('draw', { x, y, deviceId: socket.id });
     });
 
-    // iOS-Fallback
-    window.addEventListener('click', async ()=>{
+    // iOS-Fallback für Permission
+    window.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         await DeviceOrientationEvent.requestPermission().catch(console.warn);
       }
