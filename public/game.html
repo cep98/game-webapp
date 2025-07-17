@@ -19,6 +19,7 @@
     const socket = io();
     socket.on('connect', () => {
       socket.emit('identify', { role:'display', deviceId: null });
+      socket.emit('request-settings');
     });
 
     const canvas = document.getElementById('canvas');
@@ -29,10 +30,10 @@
     // Ball-Objekt mit Rotation
     let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20, angle: 0, angularVelocity: 0 };
 
-    // Globale Settings (werden vom Admin gesetzt)
+    // Globale Settings
     let maxHor = 20;
     let maxVer = 20;
-    let smoothing = 0.5;  // 0 = keine Glättung, 1 = voll
+    let smoothing = 0.5;
 
     // Konstanten
     const FRICTION         = 0.995;
@@ -41,60 +42,45 @@
     const BASE_STRENGTH    = 0.3;
     const SPEED_SCALE      = 0.05;
     const PTR_TTL          = 500;
-    const PTR_R            = 16;   // Größe des Laserpunkts
+    const PTR_R            = 16;
 
     // Ball-Grafik
     const ballImg = new Image();
     ballImg.src   = '/ball.png';
 
-    // Pointer-History: speichert rek. {px,py,pt,x,y,t,sx,sy}
+    // Pointer-History
     const pointers = {};
 
-    // Eintreffende Settings vom Server
+    // Einstellungen vom Server
     socket.on('settings', data => {
       maxHor = data.maxHor;
       maxVer = data.maxVer;
       smoothing = data.smoothing;
     });
-    // Fallback: direktes Update
-    socket.on('update-settings', data => {
-      maxHor = data.maxHor;
-      maxVer = data.maxVer;
-      smoothing = data.smoothing;
-    });
 
-    // Update von Control-Input: rek. Position und glätten
+    // Eingehende Pointer-Daten
     socket.on('draw', ({ x, y, deviceId }) => {
       const now = performance.now();
       const newX = x * W;
       const newY = y * H;
       const prev = pointers[deviceId];
       if (prev) {
-        const smoothPrevX = prev.sx;
-        const smoothPrevY = prev.sy;
-        // Für Glättung: linear interpolation
-        const sx = smoothPrevX + (newX - smoothPrevX) * (1 - smoothing);
-        const sy = smoothPrevY + (newY - smoothPrevY) * (1 - smoothing);
-        pointers[deviceId] = {
-          px: prev.x,
-          py: prev.y,
-          pt: prev.t,
-          x: newX,
-          y: newY,
-          t: now,
-          sx, sy
-        };
+        const sx = prev.sx + (newX - prev.sx) * (1 - smoothing);
+        const sy = prev.sy + (newY - prev.sy) * (1 - smoothing);
+        pointers[deviceId] = { ...prev, px: prev.x, py: prev.y, pt: prev.t, x: newX, y: newY, t: now, sx, sy };
       } else {
         pointers[deviceId] = { px: newX, py: newY, pt: now, x: newX, y: newY, t: now, sx: newX, sy: newY };
       }
     });
 
+    // Alte Pointers entfernen
     function cleanup(now) {
-      for (let id in pointers) {
+      Object.keys(pointers).forEach(id => {
         if (now - pointers[id].t > PTR_TTL) delete pointers[id];
-      }
+      });
     }
 
+    // Kollision Segment vs. Kreis
     function segmentCircleCollision(x1, y1, x2, y2, cx, cy, r) {
       const vx = x2 - x1;
       const vy = y2 - y1;
@@ -106,7 +92,7 @@
       const iy = y1 + vy * t;
       const dx = cx - ix;
       const dy = cy - iy;
-      return (dx*dx + dy*dy) < r*r;
+      return dx*dx + dy*dy <= r*r;
     }
 
     function update(dt) {
@@ -114,8 +100,23 @@
       cleanup(now);
       for (let id in pointers) {
         const p = pointers[id];
-        // Kollision mit Berücksichtigung der Laser-Radius
-        if (segmentCircleCollision(p.px, p.py, p.sx, p.sy, ball.x, ball.y, ball.r + PTR_R)) {
+        // Prüfe Collision mit Segment
+        let hit = segmentCircleCollision(p.px, p.py, p.sx, p.sy, ball.x, ball.y, ball.r + PTR_R);
+        // Falls falsch negativ, sample Zwischenschritte
+        if (!hit) {
+          const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
+          const steps = Math.ceil(segLen / (ball.r + PTR_R));
+          for (let i = 1; i < steps; i++) {
+            const t = i / steps;
+            const ix = p.px + (p.sx - p.px) * t;
+            const iy = p.py + (p.sy - p.py) * t;
+            if ((ball.x - ix)**2 + (ball.y - iy)**2 <= (ball.r + PTR_R)**2) {
+              hit = true;
+              break;
+            }
+          }
+        }
+        if (hit) {
           const midx = (p.px + p.sx) / 2;
           const midy = (p.py + p.sy) / 2;
           let dx = ball.x - midx;
@@ -139,6 +140,7 @@
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
+      // Wände
       if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
       if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
