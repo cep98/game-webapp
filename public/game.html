@@ -70,16 +70,14 @@
       const newY = y * H;
       const prev = pointers[deviceId];
       if (prev) {
-        const rawPrevX = prev.x;
-        const rawPrevY = prev.y;
         const smoothPrevX = prev.sx;
         const smoothPrevY = prev.sy;
         // Für Glättung: linear interpolation
         const sx = smoothPrevX + (newX - smoothPrevX) * (1 - smoothing);
         const sy = smoothPrevY + (newY - smoothPrevY) * (1 - smoothing);
         pointers[deviceId] = {
-          px: rawPrevX,
-          py: rawPrevY,
+          px: prev.x,
+          py: prev.y,
           pt: prev.t,
           x: newX,
           y: newY,
@@ -116,7 +114,8 @@
       cleanup(now);
       for (let id in pointers) {
         const p = pointers[id];
-        if (segmentCircleCollision(p.px, p.py, p.sx, p.sy, ball.x, ball.y, ball.r)) {
+        // Kollision mit Berücksichtigung der Laser-Radius
+        if (segmentCircleCollision(p.px, p.py, p.sx, p.sy, ball.x, ball.y, ball.r + PTR_R)) {
           const midx = (p.px + p.sx) / 2;
           const midy = (p.py + p.sy) / 2;
           let dx = ball.x - midx;
