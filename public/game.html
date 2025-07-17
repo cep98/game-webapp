@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.0 Game</div>
+  <div id="version">v1.1 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -37,8 +37,8 @@
     const FRICTION         = 0.995;
     const ANGULAR_FRICTION = 0.95;
     const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.5;    // Angepasster Basisimpuls
-    const SPEED_SCALE      = 0.001;  // Angepasste Skalierung für Geschwindigkeitseinfluss
+    const BASE_STRENGTH    = 0.3;     // Reduzierter Basisimpuls
+    const SPEED_SCALE      = 0.0005;  // Reduzierte Geschwindigkeitsskala
     const PTR_TTL          = 500;
     const PTR_R            = 16;
 
@@ -47,7 +47,6 @@
     ballImg.src   = '/ball.png';
 
     // Pointer-History
-    // p: { sx, sy, px, py, t, pt }
     const pointers = {};
 
     // Einstellungen vom Server
