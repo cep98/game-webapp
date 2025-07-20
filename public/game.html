@@ -38,40 +38,55 @@
       if (deviceId) deviceColors[deviceId] = color;
     });
 
-    // Input
+    // Pointers
     const pointers = {};
     socket.on('draw', ({ x, y, deviceId }) => {
       const now = performance.now();
       const rawX = x * W, rawY = y * H;
       const prev = pointers[deviceId];
       if (prev) {
-        const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
-        const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
+        const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
+        const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
         pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.py, t: now, pt: prev.pt };
       } else {
         pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
       }
     });
 
+    // Ball
+    const ball = { x: W/2, y: H/2, vx: 5, vy: 3, r: PTR_R };
+
     // Update & draw loop
     function update(dt) {
-      // TODO: Physik-Update hier implementieren
+      // Ball physics
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -1; }
+      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx *= -1; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -1; }
+      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy *= -1; }
     }
 
     function draw() {
       ctx.clearRect(0, 0, W, H);
-      for (let id in pointers) {
+      // Draw ball
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, 2 * Math.PI);
+      ctx.fill();
+      // Draw pointers
+      for (const id in pointers) {
         const p = pointers[id];
         ctx.fillStyle = deviceColors[id] || '#0cf';
         ctx.beginPath();
-        ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI);
+        ctx.arc(p.sx, p.sy, PTR_R, 0, 2 * Math.PI);
         ctx.fill();
       }
     }
 
     let last = performance.now();
     (function loop(now) {
-      const dt = (now-last)/16.67;
+      const dt = (now - last) / 16.67;
       last = now;
       update(dt);
       draw();
