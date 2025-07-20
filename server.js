@@ -15,65 +15,31 @@ let settings = {
   smoothing:  0.5
 };
 
-// Alle verbundenen Clients
-const clients = {};
+// Routen
+app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
+app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
+app.get('/admin',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
-// Hilfs-Funktion: Client-Liste an alle Admins senden
-function emitClientList() {
-  const list = Object.entries(clients).map(([id, c]) => ({
-    type: c.role,
-    deviceId: c.deviceId || null,
-    ip: c.ip || null
-  }));
-  // sende nur an Admin-Clients
-  for (const [id, c] of Object.entries(clients)) {
-    if (c.role === 'admin') {
-      io.to(id).emit('client-list', list);
-    }
-  }
-}
+const clients = {};
 
 io.on('connection', socket => {
   // Identifikation
   socket.on('identify', ({ role, deviceId }) => {
-    // Client speichern inklusive IP
-    clients[socket.id] = { role, deviceId: deviceId || null, ip: socket.handshake.address };
-
-    if (role === 'control') {
-      // Farbe zuweisen
-      const color = '#' + Math.floor(Math.random() * 0xFFFFFF).toString(16).padStart(6, '0');
-      clients[socket.id].color = color;
-
-      // an das Control selbst senden
-      socket.emit('assigned-color', { deviceId: socket.id, color });
-      // an alle Displays senden
-      socket.broadcast.emit('assigned-color', { deviceId: socket.id, color });
-    } else if (role === 'display') {
-      // Bestehende Controls an neues Display senden
-      for (const [id, c] of Object.entries(clients)) {
-        if (c.role === 'control' && c.color) {
-          socket.emit('assigned-color', { deviceId: id, color: c.color });
-        }
-      }
-      // Settings an neues Display senden
-      socket.emit('settings', settings);
-    }
-
-    // Aktualisiere Client-Liste in Admin
-    emitClientList();
+    clients[socket.id] = { role, deviceId };
   });
 
-  // Admin: Settings anfordern
+  // Admin: send settings
   socket.on('request-settings', () => {
     socket.emit('settings', settings);
   });
 
-  // Admin: Settings updaten
+  // Admin: update settings
   socket.on('update-settings', data => {
+    // Werte übernehmen
     settings = { ...settings, ...data };
-    // an alle Displays senden
-    for (const [id, c] of Object.entries(clients)) {
-      if (c.role === 'display') {
+    // An alle DisplaYs senden
+    for (let id in clients) {
+      if (clients[id].role === 'display') {
         io.to(id).emit('settings', settings);
       }
     }
@@ -85,7 +51,6 @@ io.on('connection', socket => {
   // Disconnect
   socket.on('disconnect', () => {
     delete clients[socket.id];
-    emitClientList();
   });
 });
 
