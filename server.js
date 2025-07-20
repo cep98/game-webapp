@@ -5,55 +5,70 @@ const app     = express();
 const http    = require('http').createServer(app);
 const io      = require('socket.io')(http);
 
-// Statische Auslieferung
+// Statische Dateien ausliefern
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Defaults für Settings
+// Aktuelle Einstellungen
 let settings = {
-  maxHor:     20,
-  maxVer:     20,
-  smoothing:  0.5
+  maxHor:    20,
+  maxVer:    20,
+  smoothing: 0.5
 };
 
-// Routen
-app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
-app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
-app.get('/admin',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
-
+// Map aller verbundenen Clients
+// socket.id => { role, deviceId, ip }
 const clients = {};
 
-io.on('connection', socket => {
-  // Identifikation
-  socket.on('identify', ({ role, deviceId }) => {
-    clients[socket.id] = { role, deviceId };
-  });
-
-  // Admin: send settings
-  socket.on('request-settings', () => {
-    socket.emit('settings', settings);
-  });
-
-  // Admin: update settings
-  socket.on('update-settings', data => {
-    // Werte übernehmen
-    settings = { ...settings, ...data };
-    // An alle DisplaYs senden
-    for (let id in clients) {
-      if (clients[id].role === 'display') {
-        io.to(id).emit('settings', settings);
-      }
+// Hilfsfunktion: Liste aller Clients an Admins senden
+function broadcastClientList() {
+  const list = Object.values(clients).map(c => ({
+    type:     c.role,      // control, display, admin
+    deviceId: c.deviceId,
+    ip:       c.ip
+  }));
+  for (let id in clients) {
+    if (clients[id].role === 'admin') {
+      io.to(id).emit('client-list', list);
     }
-  });
+  }
+}
 
-  // Control-Input weiterleiten
-  socket.on('draw', data => socket.broadcast.emit('draw', data));
+io.on('connection', socket => {
+  const ip = socket.handshake.address;
 
-  // Disconnect
-  socket.on('disconnect', () => {
-    delete clients[socket.id];
+  // Identifikation: role & deviceId
+  socket.on('identify', ({ role, deviceId }) => {
+    clients[socket.id] = { role, deviceId, ip };
+    broadcastClientList();
+
+    // Auf Settings-Request initiale Werte schicken
+    socket.on('request-settings', () => {
+      socket.emit('settings', settings);
+    });
+
+    // Admin updatet Settings
+    socket.on('update-settings', data => {
+      settings = { ...settings, ...data };
+      // Neue Settings an alle control/display senden
+      Object.entries(clients).forEach(([id, c]) => {
+        if (c.role === 'control' || c.role === 'display') {
+          io.to(id).emit('settings', settings);
+        }
+      });
+    });
+
+    // Control sendet draw
+    socket.on('draw', payload => {
+      socket.broadcast.emit('draw', payload);
+    });
+
+    // Trennung
+    socket.on('disconnect', () => {
+      delete clients[socket.id];
+      broadcastClientList();
+    });
   });
 });
 
-// Start
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
