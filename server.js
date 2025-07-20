@@ -5,55 +5,68 @@ const app     = express();
 const http    = require('http').createServer(app);
 const io      = require('socket.io')(http);
 
-// Statische Auslieferung
+// Farb‑Palette für Controls
+const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#bcf60c','#fabebe'];
+let colorIndex = 0;
+
+// Statische Dateien ausliefern
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Defaults für Settings
-let settings = {
-  maxHor:     20,
-  maxVer:     20,
-  smoothing:  0.5
-};
+// Aktuelle Einstellungen
+let settings = { maxHor:20, maxVer:20, smoothing:0.5 };
 
-// Routen
-app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
-app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
-app.get('/admin',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
-
+// Map aller Clients
 const clients = {};
 
-io.on('connection', socket => {
-  // Identifikation
-  socket.on('identify', ({ role, deviceId }) => {
-    clients[socket.id] = { role, deviceId };
-  });
-
-  // Admin: send settings
-  socket.on('request-settings', () => {
-    socket.emit('settings', settings);
-  });
-
-  // Admin: update settings
-  socket.on('update-settings', data => {
-    // Werte übernehmen
-    settings = { ...settings, ...data };
-    // An alle DisplaYs senden
-    for (let id in clients) {
-      if (clients[id].role === 'display') {
-        io.to(id).emit('settings', settings);
-      }
+function broadcastClientList() {
+  const list = Object.values(clients).map(c => ({
+    type:     c.role,
+    deviceId: c.deviceId,
+    ip:       c.ip,
+    color:    c.color
+  }));
+  for (let id in clients) {
+    if (clients[id].role === 'admin') {
+      io.to(id).emit('client-list', list);
     }
-  });
+  }
+}
 
-  // Control-Input weiterleiten
-  socket.on('draw', data => socket.broadcast.emit('draw', data));
+io.on('connection', socket => {
+  const ip = socket.handshake.address;
 
-  // Disconnect
-  socket.on('disconnect', () => {
-    delete clients[socket.id];
+  socket.on('identify', ({ role, deviceId }) => {
+    clients[socket.id] = { role, deviceId, ip };
+    // Bei Control: Farbe zuweisen
+    if (role === 'control') {
+      const col = COLORS[colorIndex++ % COLORS.length];
+      clients[socket.id].color = col;
+      socket.emit('assigned-color', col);           // ans Control selbst
+      io.emit('assigned-color', { deviceId, color: col }); // an alle Displays
+    }
+    broadcastClientList();
+
+    // Settings
+    socket.on('request-settings', () => socket.emit('settings', settings));
+    socket.on('update-settings', data => {
+      settings = { ...settings, ...data };
+      // an alle Control & Display
+      Object.entries(clients).forEach(([id,c]) => {
+        if (c.role==='control' || c.role==='display') {
+          io.to(id).emit('settings', settings);
+        }
+      });
+    });
+
+    // Control → Game
+    socket.on('draw', payload => socket.broadcast.emit('draw', payload));
+
+    socket.on('disconnect', () => {
+      delete clients[socket.id];
+      broadcastClientList();
+    });
   });
 });
 
-// Start
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT||3000;
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
