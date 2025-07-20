@@ -13,7 +13,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.5 Control</div>
+  <div id="version">v1.6 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -51,23 +51,19 @@
       laserBtn.style.display='block';
     });
 
-    // Reset on start
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing=true;
       zeroGamma=lastGamma;
       zeroBeta=lastBeta;
-      transX=0;
-      transY=0;
+      transX=0; transY=0;
     }, { passive:false });
     laserBtn.addEventListener('touchend', e => { e.preventDefault(); drawing=false; });
 
-    // Device orientation
     window.addEventListener('deviceorientation', ev => {
       lastGamma=ev.gamma||0;
       lastBeta=ev.beta||0;
       if (!drawing) return;
-      // compute rotational part
       let dH=(lastGamma-zeroGamma);
       if(dH>180)dH-=360;
       if(dH<-180)dH+=360;
@@ -76,25 +72,22 @@
       dV=Math.max(-maxVer,Math.min(maxVer,dV));
       const rotX=(dH+maxHor)/(2*maxHor);
       const rotY=1-((dV+maxVer)/(2*maxVer));
-      // combine with translation
-      // final X = rotX + scale * transX
-      const scale=0.005; // increase sensitivity
-      let x=rotX + transX*scale;
-      let y=rotY - transY*scale;
+      // combine with translation (invert translation axes)
+      const scale=0.005;
+      let x=rotX - transX*scale;
+      let y=rotY + transY*scale;
       x=Math.max(0,Math.min(1,x));
       y=Math.max(0,Math.min(1,y));
       socket.emit('draw',{ x,y, deviceId: socket.id });
     });
 
-    // Device motion for translation
     window.addEventListener('devicemotion', ev => {
       if (!drawing) return;
-      // use accelerationIncludingGravity for simpler detection
-      transX += (ev.accelerationIncludingGravity.x||0);
-      transY += (ev.accelerationIncludingGravity.y||0);
+      // invert translation directions for intuitive move
+      transX -= (ev.accelerationIncludingGravity.x||0);
+      transY -= (ev.accelerationIncludingGravity.y||0);
     });
 
-    // iOS fallback
     window.addEventListener('click', async ()=>{
       if(DeviceOrientationEvent?.requestPermission) await DeviceOrientationEvent.requestPermission().catch(console.warn);
     });
