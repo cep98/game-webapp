@@ -8,20 +8,32 @@
     body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
     header, section { padding:1em; }
     header { display:flex; align-items:center; justify-content:space-between; background:#222; }
+    #version { font-size:0.9em; opacity:0.7; }
     #settings { display:flex; gap:1em; align-items:center; }
     label { font-size:0.9em; }
     input[type=number], input[type=range] { width:4em; }
-    #version { font-size:0.9em; opacity:0.7; }
     #clients { list-style:none; padding:0; margin:1em; }
-    #clients li { padding:0.5em; border-bottom:1px solid #333; }
+    #clients li {
+      display:flex; align-items:center;
+      padding:0.5em 0; border-bottom:1px solid #333;
+    }
+    .dot {
+      width:12px; height:12px;
+      border-radius:50%;
+      display:inline-block;
+      margin-right:0.75em;
+      flex-shrink:0;
+      background:#666;
+    }
+    .client-info {
+      font-size:0.95em;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>Admin-Panel</h1>
-    <div>
-      <span id="version">v1.4 Admin</span>
-    </div>
+    <div id="version">v1.5 Admin</div>
     <div id="settings">
       <label>Max. Winkel H:<input id="maxHor" type="number" min="0" max="180" value="20" />°</label>
       <label>Max. Winkel V:<input id="maxVer" type="number" min="0" max="180" value="20" />°</label>
@@ -39,19 +51,15 @@
     const socket = io();
 
     socket.on('connect', () => {
-      // Als Admin identifizieren
       socket.emit('identify', { role:'admin', deviceId: null });
-      // Der Server schickt sofort ein 'client-list'-Event
     });
 
-    // UI-Elemente
     const maxHorInput    = document.getElementById('maxHor');
     const maxVerInput    = document.getElementById('maxVer');
     const smoothingInput = document.getElementById('smoothing');
     const smoothingVal   = document.getElementById('smoothingVal');
     const clientsList    = document.getElementById('clients');
 
-    // Settings-Änderungen senden
     function sendSettings() {
       const maxHor    = parseFloat(maxHorInput.value);
       const maxVer    = parseFloat(maxVerInput.value);
@@ -65,12 +73,25 @@
       sendSettings();
     });
 
-    // Client-Liste empfangen und anzeigen
     socket.on('client-list', list => {
       clientsList.innerHTML = '';
       list.forEach(c => {
         const li = document.createElement('li');
-        li.textContent = `${c.type} – ${c.deviceId || 'n/a'} – ${c.ip || '–'}`;
+
+        // Farbpunkt
+        const dot = document.createElement('span');
+        dot.classList.add('dot');
+        if (c.color) {
+          dot.style.backgroundColor = c.color;
+        }
+        li.appendChild(dot);
+
+        // Text
+        const info = document.createElement('span');
+        info.classList.add('client-info');
+        info.textContent = `${c.type} – ${c.deviceId} – ${c.ip}`;
+        li.appendChild(info);
+
         clientsList.appendChild(li);
       });
     });
