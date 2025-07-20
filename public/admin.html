@@ -6,66 +6,65 @@
   <title>Admin</title>
   <style>
     body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
-    header, section { padding:1em; }
-    header { display:flex; align-items:center; justify-content:space-between; background:#222; }
+    header { display:flex; align-items:center; justify-content:space-between; background:#222; padding:1em; }
     #settings { display:flex; gap:1em; align-items:center; }
     label { font-size:0.9em; }
-    input[type=number], input[type=range] { width:4em; }
+    input[type=number], input[type=range] { width:5em; }
     #clients { list-style:none; padding:0; margin:1em; }
-    #clients li { padding:0.5em; border-bottom:1px solid #333; }
+    #clients li { display:flex; align-items:center; padding:0.5em; border-bottom:1px solid #333; }
+    .color-box { width:12px; height:12px; margin-right:0.5em; border-radius:2px; }
+    #version { font-size:0.9em; opacity:0.6; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Admin-Panel</h1>
+    <h1>Admin-Panel <span id="version">v1.0 Admin</span></h1>
     <div id="settings">
-      <label>Max. Winkel H:<input id="maxHor" type="number" min="0" max="180" value="20" />°</label>
-      <label>Max. Winkel V:<input id="maxVer" type="number" min="0" max="180" value="20" />°</label>
-      <label>Glättung:<input id="smoothing" type="range" min="0" max="100" value="50" /> <span id="smoothingVal">50%</span></label>
+      <label>Max. Bewegung: <input id="maxMove" type="number" min="0" value="30"/> cm</label>
+      <label>Glättung: <input id="smoothing" type="range" min="0" max="100" value="50"/> <span id="smoothingVal">50%</span></label>
     </div>
   </header>
-
   <section>
     <h2>Angeschlossene Clients</h2>
     <ul id="clients"></ul>
   </section>
-
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify', { role:'admin', deviceId: null });
+      socket.emit('identify', { role:'admin', deviceId:null });
+      socket.emit('request-settings');
     });
-
-    // UI-Elemente
-    const maxHorInput    = document.getElementById('maxHor');
-    const maxVerInput    = document.getElementById('maxVer');
-    const smoothingInput = document.getElementById('smoothing');
-    const smoothingVal   = document.getElementById('smoothingVal');
-    const clientsList    = document.getElementById('clients');
-
-    // Änderungen senden
+    const maxMoveInput  = document.getElementById('maxMove');
+    const smoothingInput= document.getElementById('smoothing');
+    const smoothingVal  = document.getElementById('smoothingVal');
+    const clientsList   = document.getElementById('clients');
     function sendSettings() {
-      const maxHor    = parseFloat(maxHorInput.value);
-      const maxVer    = parseFloat(maxVerInput.value);
-      const smoothing = parseFloat(smoothingInput.value) / 100;
-      socket.emit('update-settings', { maxHor, maxVer, smoothing });
+      const maxMove   = parseFloat(maxMoveInput.value);
+      const smoothing = parseFloat(smoothingInput.value)/100;
+      socket.emit('update-settings', { maxMove, smoothing });
     }
-    maxHorInput.addEventListener('change', sendSettings);
-    maxVerInput.addEventListener('change', sendSettings);
-    smoothingInput.addEventListener('input', () => {
-      smoothingVal.textContent = smoothingInput.value + '%';
+    maxMoveInput.addEventListener('change', sendSettings);
+    smoothingInput.addEventListener('input', ()=>{
+      smoothingVal.textContent = smoothingInput.value+'%';
       sendSettings();
     });
-
-    // Client-Liste aktualisieren
     socket.on('client-list', list => {
       clientsList.innerHTML = '';
       list.forEach(c => {
         const li = document.createElement('li');
-        li.textContent = `${c.type} - ${c.deviceId || 'n/a'} - ${c.ip}`;
+        const box = document.createElement('span');
+        box.className = 'color-box';
+        box.style.background = c.color||'#888';
+        li.appendChild(box);
+        li.appendChild(document.createTextNode(`${c.type} – ${c.deviceId||'n/a'} – ${c.ip}`));
         clientsList.appendChild(li);
       });
+    });
+    socket.on('settings', ({ maxMove, smoothing }) => {
+      maxMoveInput.value  = maxMove;
+      smoothingInput.value= smoothing*100;
+      smoothingVal.textContent= (smoothing*100)+'%';
     });
   </script>
 </body>
