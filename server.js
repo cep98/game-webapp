@@ -28,6 +28,7 @@ let controlCount   = 0;
 // Hilfsfunktion: Client-Liste an alle Admins senden
 function sendClientList() {
   const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
+    socketId: id,
     type:     role,
     deviceId: deviceId || 'n/a',
     ip:       io.sockets.sockets.get(id)?.handshake.address || '–',
@@ -36,11 +37,11 @@ function sendClientList() {
   // Debug
   console.log('Aktuelle Clients:', list);
   // An jeden Admin senden
-  Object.entries(clients).forEach(([id, c]) => {
+  for (let [id, c] of Object.entries(clients)) {
     if (c.role === 'admin') {
       io.to(id).emit('client-list', list);
     }
-  });
+  }
 }
 
 io.on('connection', socket => {
@@ -65,20 +66,35 @@ io.on('connection', socket => {
   socket.on('update-settings', data => {
     settings = { ...settings, ...data };
     // an alle Displays weiterleiten
-    Object.entries(clients).forEach(([id, c]) => {
+    for (let [id, c] of Object.entries(clients)) {
       if (c.role === 'display') {
         io.to(id).emit('settings', settings);
       }
-    });
+    }
   });
 
   // Control‑Input weiterleiten
   socket.on('draw', data => {
     socket.broadcast.emit('draw', data);
   });
-  // Ende der Zeichnung weiterleiten
   socket.on('draw-end', data => {
     socket.broadcast.emit('draw-end', data);
+  });
+
+  // Admin: Handy aus Session kicken
+  socket.on('kill-client', ({ socketId }) => {
+    // Nur Admins dürfen
+    const me = clients[socket.id];
+    if (!me || me.role !== 'admin') return;
+    // Existiert Client?
+    if (clients[socketId]) {
+      // Ziel‑Client benachrichtigen
+      io.to(socketId).emit('force-reload');
+      // Entfernen
+      delete clients[socketId];
+      // Liste an Admins aktualisieren
+      sendClientList();
+    }
   });
 
   // Disconnect
