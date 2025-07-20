@@ -1,155 +1,109 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Control</title>
   <style>
-    body   { margin:0; background:#000; overflow:hidden; }
-    canvas { display:block; margin:auto; background:#000; }
-    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      background: #222;
+      color: #fff;
+      font-family: sans-serif;
+    }
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+    #version {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      color: #fff;
+      opacity: 0.8;
+      font-size: 0.9em;
+    }
+    #gyroBtn, #laserBtn {
+      font-size: 1.2em;
+      padding: 0.5em 1em;
+      margin: 0.5em;
+      color: #fff;
+      background: #444;
+      border: 4px solid transparent;
+      border-radius: 4px;
+      transition: border-color 0.3s;
+    }
+    #laserBtn {
+      width: 100px;
+      height: 100px;
+      border-radius: 50%;
+      background: red;
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <div id="version">v1.2 Game</div>
-  <canvas id="canvas" width="1024" height="1024"></canvas>
+  <div id="version">v1.3 Control</div>
+  <button id="gyroBtn">Gyro freigeben</button>
+  <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify', { role:'display', deviceId: null });
+      socket.emit('identify', { role: 'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    const canvas = document.getElementById('canvas');
-    const ctx    = canvas.getContext('2d');
-    const W      = canvas.width;
-    const H      = canvas.height;
-
-    // Ball-Objekt mit Rotation
-    let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20, angle: 0, angularVelocity: 0 };
-
-    // Globale Settings
-    let smoothing = 0.5;
-
-    // Konstanten – reduziert für weniger Beschleunigung
-    const FRICTION         = 0.995;
-    const ANGULAR_FRICTION = 0.95;
-    const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.15;
-    const SPEED_SCALE      = 0.0002;
-    const PTR_TTL          = 500;
-    const PTR_R            = 16;
-
-    // Ball-Grafik
-    const ballImg = new Image();
-    ballImg.src   = '/ball.png';
-
-    const pointers = {};
-
-    socket.on('settings', data => {
-      smoothing = data.smoothing;
+    // Farbe, die der Server zuweist
+    let myColor = '#0cf';
+    socket.on('assigned-color', color => {
+      myColor = color;
+      const laserBtn = document.getElementById('laserBtn');
+      laserBtn.style.borderColor = myColor;
     });
 
-    socket.on('draw', ({ x, y, deviceId }) => {
-      const now  = performance.now();
-      const rawX = x * W;
-      const rawY = y * H;
-      const prev = pointers[deviceId];
-      if (prev) {
-        const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
-        const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
-        pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
-      } else {
-        pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
+    let maxHor = 20, maxVer = 20;
+    socket.on('settings', ({ maxHor: h, maxVer: v }) => { maxHor = h; maxVer = v; });
+
+    const gyroBtn  = document.getElementById('gyroBtn');
+    const laserBtn = document.getElementById('laserBtn');
+    let drawing=false, zeroA=0, zeroB=0;
+    let lastAlpha=0, lastBeta=0;
+
+    gyroBtn.addEventListener('click', async () => {
+      if (DeviceOrientationEvent?.requestPermission) {
+        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
+        if (perm !== 'granted') return alert('Gyro-Zugriff benötigt!');
       }
+      gyroBtn.style.display = 'none';
+      laserBtn.style.display = 'block';
     });
 
-    function cleanup(now) {
-      for (let id in pointers) {
-        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
-      }
-    }
+    laserBtn.addEventListener('touchstart', e => {
+      e.preventDefault(); drawing=true; zeroA=lastAlpha; zeroB=lastBeta;
+    }, { passive: false });
+    laserBtn.addEventListener('touchend', e => { e.preventDefault(); drawing=false; });
 
-    function update(dt) {
-      const now = performance.now();
-      cleanup(now);
-      for (let id in pointers) {
-        const p = pointers[id];
-        const dxSeg = p.sx - p.px;
-        const dySeg = p.sy - p.py;
-        const segLen = Math.hypot(dxSeg, dySeg);
-        // Sampling: Mindestschritte für präzisere Kollision
-        const pixelStep = Math.max(ball.r / 4, 1);
-        const steps = Math.max(Math.ceil(segLen / pixelStep), 10);
-        let hit = false;
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          const ix = p.px + dxSeg * t;
-          const iy = p.py + dySeg * t;
-          const dxB = ball.x - ix;
-          const dyB = ball.y - iy;
-          if (dxB*dxB + dyB*dyB <= (ball.r + PTR_R)**2) {
-            hit = true;
-            break;
-          }
-        }
-        if (hit) {
-          const midx = p.px + dxSeg * 0.5;
-          const midy = p.py + dySeg * 0.5;
-          let dx = ball.x - midx;
-          let dy = ball.y - midy;
-          const len = Math.hypot(dx, dy) || 1;
-          dx /= len; dy /= len;
-          const deltaT = Math.max(p.t - p.pt, 1);
-          const speedPxS = segLen * 1000 / deltaT;
-          const strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
-          ball.vx += dx * strength;
-          ball.vy += dy * strength;
-          const rx = midx - ball.x;
-          const ry = midy - ball.y;
-          const tx = -dy;
-          const ty = dx;
-          const spinImp = (rx * ty - ry * tx) * strength * 0.005;
-          ball.angularVelocity += spinImp;
-        }
-        p.pt = p.t;
-      }
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
-      ball.angle += ball.angularVelocity * dt;
-      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
-      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
-      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
-      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
-      ball.vx *= FRICTION;
-      ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
-    }
+    window.addEventListener('deviceorientation', ev => {
+      lastAlpha = ev.alpha; lastBeta = ev.beta;
+      if (!drawing) return;
+      let dA = lastAlpha - zeroA; if (dA>180) dA-=360; if(dA<-180) dA+=360;
+      let dB = lastBeta - zeroB;
+      dA=Math.max(-maxHor,Math.min(maxHor,dA));
+      dB=Math.max(-maxVer,Math.min(maxVer,dB));
+      const x=1-((dA+maxHor)/(2*maxHor)), y=1-((dB+maxVer)/(2*maxVer));
+      socket.emit('draw',{x,y,deviceId:socket.id});
+    });
 
-    function draw() {
-      ctx.clearRect(0, 0, W, H);
-      if (ballImg.complete) {
-        ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.angle);
-        ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
-        ctx.restore();
-      }
-      ctx.fillStyle = '#0cf';
-      for (let id in pointers) {
-        const p = pointers[id];
-        ctx.beginPath(); ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI); ctx.fill();
-      }
-    }
-
-    let last = performance.now();
-    (function loop(now) {
-      const dt = (now - last) / 16.67;
-      last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
-    })(last);
+    window.addEventListener('click', async ()=>{
+      if(DeviceOrientationEvent?.requestPermission) await DeviceOrientationEvent.requestPermission().catch(console.warn);
+    });
   </script>
 </body>
 </html>
