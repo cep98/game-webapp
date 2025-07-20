@@ -5,7 +5,7 @@ const app     = express();
 const http    = require('http').createServer(app);
 const io      = require('socket.io')(http);
 
-// Statische Auslieferung aus /public
+// Statische Auslieferung
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Defaults für Settings
@@ -15,27 +15,30 @@ let settings = {
   smoothing: 0.5
 };
 
-// Farbpalette für Controls (bleibt unverändert)
+// Farbpalette für Controls
 const COLORS = [
-  '#e6194b','#3cb44b','#ffe119','#4363d8',
-  '#f58231','#911eb4','#46f0f0','#f032e6'
+  '#e6194b', // rot
+  '#3cb44b', // grün
+  '#ffe119', // gelb
+  '#4363d8', // blau
+  '#f58231', // orange
+  '#911eb4', // lila
+  '#46f0f0', // türkis
+  '#f032e6'  // magenta
 ];
 
 // Tracking aller Clients
-const clients      = {};  // socketId → { role, deviceId, color? }
-let controlCount   = 0;
+const clients    = {};  // socketId → { role, deviceId, color? }
+let controlCount = 0;
 
-// Helper: Liste aller Clients an alle Admin-Sockets senden
+// Hilfsfunktion: Client-Liste an alle Admins senden
 function sendClientList() {
   const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
     type:     role,
     deviceId: deviceId || 'n/a',
-    ip:       (io.sockets.sockets.get(id)?.handshake.address) || '–',
+    ip:       io.sockets.sockets.get(id)?.handshake.address || '–',
     color:    color || null
   }));
-  // Debug in Console
-  console.log('Aktuelle Clients:', list);
-  // An jeden Admin senden
   Object.entries(clients).forEach(([id, c]) => {
     if (c.role === 'admin') {
       io.to(id).emit('client-list', list);
@@ -44,26 +47,24 @@ function sendClientList() {
 }
 
 io.on('connection', socket => {
-  // Wenn sich ein Client identifiziert
+  // Identifikation
   socket.on('identify', ({ role, deviceId }) => {
-    // Farbzuweisung nur für Controls
     let color = null;
     if (role === 'control') {
+      // Zyklische Zuweisung
       color = COLORS[controlCount % COLORS.length];
       controlCount++;
-      // direkt an den Control-Client senden
+      // Farbe direkt zurücksenden
       socket.emit('assign-color', color);
     }
     clients[socket.id] = { role, deviceId, color };
     sendClientList();
   });
 
-  // Admin fordert Settings an
+  // Admin-Settings
   socket.on('request-settings', () => {
     socket.emit('settings', settings);
   });
-
-  // Admin ändert Settings
   socket.on('update-settings', data => {
     settings = { ...settings, ...data };
     // an alle Displays weiterschicken
@@ -74,18 +75,18 @@ io.on('connection', socket => {
     });
   });
 
-  // Steuersignale von Controls weiterleiten
+  // Control‑Input weiterleiten
   socket.on('draw', data => {
     socket.broadcast.emit('draw', data);
   });
 
-  // Bei Trennung aus Liste entfernen und Admins benachrichtigen
+  // Disconnect
   socket.on('disconnect', () => {
     delete clients[socket.id];
     sendClientList();
   });
 });
 
-// Server-Start
+// Server starten
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
