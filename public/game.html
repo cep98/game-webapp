@@ -1,156 +1,112 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Game</title>
   <style>
-    body   { margin:0; background:#000; overflow:hidden; }
+    body { margin:0; background:#000; overflow:hidden; }
     canvas { display:block; margin:auto; background:#000; }
-    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; }
+    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
   </style>
 </head>
 <body>
   <div id="version">v1.2 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
+
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify', { role:'display', deviceId: null });
+      socket.emit('identify',{ role:'display', deviceId: null });
       socket.emit('request-settings');
     });
 
     const canvas = document.getElementById('canvas');
-    const ctx    = canvas.getContext('2d');
-    const W      = canvas.width;
-    const H      = canvas.height;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
 
-    // Ball-Objekt mit Rotation
-    let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20, angle: 0, angularVelocity: 0 };
-    let scoreLeft = 0;
-    let scoreRight = 0;
-
-    // Pointer-History
-    const pointers = {};
-
-    // Globale Settings
+    let ball = { x: W/2, y: H/2, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
     let smoothing = 0.5;
+    const FRICTION=0.995, ANGULAR_FRICTION=0.95, BOUNCE=0.8,
+          BASE_STRENGTH=0.15, SPEED_SCALE=0.0002, PTR_TTL=500, PTR_R=16;
+
+    const ballImg = new Image(); ballImg.src = '/ball.png';
+    const deviceColors = {};
+    socket.on('assigned-color', ({ deviceId, color }) => {
+      if (deviceId) deviceColors[deviceId] = color;
+    });
     socket.on('settings', data => { smoothing = data.smoothing; });
 
-    // Laser-Status pro Pointer
-    socket.on('laser', ({ deviceId, on }) => {
-      if (pointers[deviceId]) pointers[deviceId].laser = on;
-    });
-
+    const pointers = {};
     socket.on('draw', ({ x, y, deviceId }) => {
-      pointers[deviceId] = { x: x * W, y: y * H, ttl: PTR_TTL, laser: pointers[deviceId]?.laser || false };
+      const now = performance.now();
+      const rawX = x * W, rawY = y * H;
+      const prev = pointers[deviceId];
+      if (prev) {
+        const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
+        const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
+        pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
+      } else {
+        pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
+      }
     });
-
-    const FRICTION         = 0.995;
-    const ANGULAR_FRICTION = 0.95;
-    const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.3;
-    const SPEED_SCALE      = 0.0005;
-    const PTR_TTL          = 500;
-
-    function resetBall() {
-      ball.x = W/2;
-      ball.y = H/2;
-      ball.vx = 0;
-      ball.vy = 0;
-      ball.angularVelocity = 0;
-    }
 
     function cleanup(now) {
-      for (let id in pointers) {
-        pointers[id].ttl -= now;
-        if (pointers[id].ttl <= 0) delete pointers[id];
-      }
+      for (let id in pointers) if (now - pointers[id].t > PTR_TTL) delete pointers[id];
     }
 
     function update(dt) {
-      // Physik anwenden
-      ball.vx *= FRICTION;
-      ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
-
-      ball.x += ball.vx * dt;
-      ball.y += ball.vy * dt;
-      ball.angle += ball.angularVelocity * dt;
-
-      // Kollision mit oberen und unteren Wänden
-      if (ball.y - ball.r < 0 || ball.y + ball.r > H) {
-        ball.vy = -ball.vy * BOUNCE;
+      const now = performance.now(); cleanup(now);
+      for (let id in pointers) {
+        const p = pointers[id];
+        const dxSeg = p.sx - p.px, dySeg = p.sy - p.py;
+        const segLen = Math.hypot(dxSeg, dySeg);
+        const pixelStep = Math.max(ball.r/4, 1), steps = Math.max(Math.ceil(segLen/pixelStep), 10);
+        let hit = false;
+        for (let i=0; i<=steps; i++) {
+          const t = i/steps;
+          const ix = p.px + dxSeg*t, iy = p.py + dySeg*t;
+          const dxB = ball.x - ix, dyB = ball.y - iy;
+          if (dxB*dxB + dyB*dyB <= (ball.r+PTR_R)**2) { hit = true; break; }
+        }
+        if (hit) {
+          const midx = p.px + dxSeg*0.5, midy = p.py + dySeg*0.5;
+          let dx = ball.x-midx, dy = ball.y-midy;
+          const len = Math.hypot(dx, dy)||1; dx/=len; dy/=len;
+          const deltaT = Math.max(p.t-p.pt,1), speedPxS = segLen*1000/deltaT;
+          const strength = BASE_STRENGTH + speedPxS*SPEED_SCALE;
+          ball.vx += dx*strength; ball.vy += dy*strength;
+          const rx = midx-ball.x, ry = midy-ball.y, tx=-dy, ty=dx;
+          ball.angularVelocity += (rx*ty - ry*tx)*strength*0.005;
+        }
+        p.pt = p.t;
       }
-
-      // Tor-Erkennung
-      if (ball.x - ball.r <= 0) {
-        scoreRight++;
-        resetBall();
-      } else if (ball.x + ball.r >= W) {
-        scoreLeft++;
-        resetBall();
-      }
-
-      cleanup(dt);
+      ball.x += ball.vx*dt; ball.y += ball.vy*dt; ball.angle += ball.angularVelocity*dt;
+      if (ball.x-ball.r<0){ball.x=ball.r;ball.vx=-ball.vx*BOUNCE;ball.angularVelocity*=-1;} 
+      if (ball.x+ball.r>W){ball.x=W-ball.r;ball.vx=-ball.vx*BOUNCE;ball.angularVelocity*=-1;} 
+      if (ball.y-ball.r<0){ball.y=ball.r;ball.vy=-ball.vy*BOUNCE;ball.angularVelocity*=-1;} 
+      if (ball.y+ball.r>H){ball.y=H-ball.r;ball.vy=-ball.vy*BOUNCE;ball.angularVelocity*=-1;} 
+      ball.vx*=FRICTION; ball.vy*=FRICTION; ball.angularVelocity*=ANGULAR_FRICTION;
     }
 
     function draw() {
-      ctx.clearRect(0, 0, W, H);
-
-      // Tore zeichnen
-      const goalWidth = 10;
-      ctx.strokeStyle = '#0cf';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(0, H * 0.25, goalWidth, H * 0.5);
-      ctx.strokeRect(W - goalWidth, H * 0.25, goalWidth, H * 0.5);
-
-      // Ball zeichnen
-      ctx.save();
-      ctx.translate(ball.x, ball.y);
-      ctx.rotate(ball.angle);
-      ctx.fillStyle = '#fff';
-      ctx.beginPath();
-      ctx.arc(0, 0, ball.r, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-
-      // Pointer und Laser zeichnen
+      ctx.clearRect(0,0,W,H);
+      if (ballImg.complete) {
+        ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle);
+        ctx.drawImage(ballImg,-ball.r,-ball.r,ball.r*2,ball.r*2);
+        ctx.restore();
+      }
       for (let id in pointers) {
         const p = pointers[id];
-        // Pointer-Kugel
-        ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 16, 0, 2 * Math.PI);
-        ctx.fill();
-        // Laser-Linie
-        if (p.laser) {
-          ctx.strokeStyle = 'red';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          ctx.lineTo(ball.x, ball.y);
-          ctx.stroke();
-        }
+        ctx.fillStyle = deviceColors[id] || '#0cf';
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI); ctx.fill();
       }
-
-      // Zähler anzeigen
-      ctx.fillStyle = '#0cf';
-      ctx.font = '48px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(scoreLeft, W * 0.25, 60);
-      ctx.fillText(scoreRight, W * 0.75, 60);
     }
 
-    // Spielschleife
-    let last = performance.now();
-    (function loop(now) {
-      const dt = (now - last) / 16.67;
-      last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
+    let last = performance.now(); (function loop(now){
+      const dt = (now-last)/16.67; last = now;
+      update(dt); draw(); requestAnimationFrame(loop);
     })(last);
   </script>
 </body>
