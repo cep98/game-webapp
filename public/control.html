@@ -2,96 +2,91 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Control</title>
   <style>
     html, body { margin:0; padding:0; height:100%; background:#222; color:#fff; font-family:sans-serif; }
     body { display:flex; flex-direction:column; align-items:center; justify-content:center; overflow:hidden; }
-    #version { position:absolute; top:10px; right:10px; font-size:0.9em; opacity:0.8; }
-    #gyroBtn, #laserBtn { font-size:1.2em; padding:0.5em 1em; margin:0.5em; color:#fff; background:#444; border:4px solid transparent; border-radius:4px; transition:border-color .3s; }
+    #version { position:absolute; top:10px; right:10px; opacity:0.8; font-size:0.9em; }
+    #gyroBtn, #laserBtn {
+      font-size:1.2em; padding:0.5em 1em; margin:0.5em;
+      color:#fff; background:#444; border:4px solid transparent;
+      border-radius:4px; transition:border-color .3s;
+    }
     #laserBtn { width:100px; height:100px; border-radius:50%; background:red; display:none; }
   </style>
 </head>
 <body>
-  <div id="version">v1.6 Control</div>
+  <div id="version">v1.3 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
+    // Connect & Identify
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    let maxHor=20, maxVer=20, smoothing=0.5;
-    socket.on('settings', ({ maxHor:h, maxVer:v, smoothing:s }) => { maxHor=h; maxVer=v; smoothing=s; });
-
+    // Meine Farbe
+    let myColor = '#0cf';
     socket.on('assigned-color', color => {
-      document.getElementById('laserBtn').style.borderColor = color;
+      myColor = color;
+      document.getElementById('laserBtn').style.borderColor = myColor;
+    });
+
+    // Winkel‑Settings
+    let maxHor=20, maxVer=20;
+    socket.on('settings', ({ maxHor:h, maxVer:v }) => {
+      maxHor = h;
+      maxVer = v;
     });
 
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let drawing=false;
-
-    // Orientation offsets
-    let zeroGamma=0, zeroBeta=0, lastGamma=0, lastBeta=0;
-
-    // Translation offsets
-    let transX=0, transY=0;
+    let drawing=false, zeroA=0, zeroB=0, lastAlpha=0, lastBeta=0;
 
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
-        if (perm!=='granted') return alert('Gyro-Zugriff benötigt!');
+        if (perm!=='granted') return alert('Gyro‑Zugriff benötigt!');
       }
-      gyroBtn.style.display='none';
-      laserBtn.style.display='block';
+      gyroBtn.style.display  = 'none';
+      laserBtn.style.display = 'block';
     });
 
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing=true;
-      zeroGamma=lastGamma;
-      zeroBeta=lastBeta;
-      transX=0; transY=0;
+      zeroA = lastAlpha;
+      zeroB = lastBeta;
     }, { passive:false });
-    laserBtn.addEventListener('touchend', e => { e.preventDefault(); drawing=false; });
+    laserBtn.addEventListener('touchend', e => {
+      e.preventDefault();
+      drawing=false;
+    });
 
     window.addEventListener('deviceorientation', ev => {
-      lastGamma=ev.gamma||0;
-      lastBeta=ev.beta||0;
+      lastAlpha = ev.alpha;
+      lastBeta  = ev.beta;
       if (!drawing) return;
-      let dH=(lastGamma-zeroGamma);
-      if(dH>180)dH-=360;
-      if(dH<-180)dH+=360;
-      let dV=(lastBeta-zeroBeta);
-      dH=Math.max(-maxHor,Math.min(maxHor,dH));
-      dV=Math.max(-maxVer,Math.min(maxVer,dV));
-      const rotX=(dH+maxHor)/(2*maxHor);
-      const rotY=1-((dV+maxVer)/(2*maxVer));
-      // combine with translation (invert translation axes)
-      const scale=0.005;
-      let x=rotX - transX*scale;
-      let y=rotY + transY*scale;
-      x=Math.max(0,Math.min(1,x));
-      y=Math.max(0,Math.min(1,y));
-      socket.emit('draw',{ x,y, deviceId: socket.id });
+      let dA = lastAlpha-zeroA; if(dA>180) dA-=360; if(dA<-180) dA+=360;
+      let dB = lastBeta-zeroB;
+      dA = Math.max(-maxHor,Math.min(maxHor,dA));
+      dB = Math.max(-maxVer,Math.min(maxVer,dB));
+      const x = 1-((dA+maxHor)/(2*maxHor));
+      const y = 1-((dB+maxVer)/(2*maxVer));
+      socket.emit('draw',{x,y,deviceId:socket.id});
     });
 
-    window.addEventListener('devicemotion', ev => {
-      if (!drawing) return;
-      // invert translation directions for intuitive move
-      transX -= (ev.accelerationIncludingGravity.x||0);
-      transY -= (ev.accelerationIncludingGravity.y||0);
-    });
-
-    window.addEventListener('click', async ()=>{
-      if(DeviceOrientationEvent?.requestPermission) await DeviceOrientationEvent.requestPermission().catch(console.warn);
+    // iOS‑Fallback
+    window.addEventListener('click', async () => {
+      if (DeviceOrientationEvent?.requestPermission) {
+        await DeviceOrientationEvent.requestPermission().catch(console.warn);
+      }
     });
   </script>
 </body>
 </html>
-
