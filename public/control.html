@@ -13,90 +13,90 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.4 Control</div>
+  <div id="version">v1.5 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    // Identify and request settings
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    let maxHor = 20, maxVer = 20, smoothing = 0.5;
-    socket.on('settings', ({ maxHor: h, maxVer: v, smoothing: s }) => { maxHor = h; maxVer = v; smoothing = s; });
+    let maxHor=20, maxVer=20, smoothing=0.5;
+    socket.on('settings', ({ maxHor:h, maxVer:v, smoothing:s }) => { maxHor=h; maxVer=v; smoothing=s; });
 
-    // Assigned color for ring
     socket.on('assigned-color', color => {
       document.getElementById('laserBtn').style.borderColor = color;
     });
 
-    const gyroBtn = document.getElementById('gyroBtn');
+    const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let useOrientation = false;
-    let zeroGamma = 0, zeroBeta = 0;
-    let lastGamma = 0, lastBeta = 0;
-    // For motion-based translation
-    let posX = 0, posY = 0;
-    let lastAccelX = 0, lastAccelY = 0;
+    let drawing=false;
+
+    // Orientation offsets
+    let zeroGamma=0, zeroBeta=0, lastGamma=0, lastBeta=0;
+
+    // Translation offsets
+    let transX=0, transY=0;
 
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
-        if (perm !== 'granted') return alert('Gyro‑Zugriff benötigt!');
+        if (perm!=='granted') return alert('Gyro-Zugriff benötigt!');
       }
-      useOrientation = true;
-      gyroBtn.style.display = 'none';
-      laserBtn.style.display = 'block';
+      gyroBtn.style.display='none';
+      laserBtn.style.display='block';
     });
 
-    // Listen motion
-    window.addEventListener('devicemotion', ev => {
-      // accumulate acceleration (without gravity) to pos
-      const aX = ev.accelerationIncludingGravity.x || 0;
-      const aY = ev.accelerationIncludingGravity.y || 0;
-      // integrate simple
-      posX += aX * 0.02; // scale factor
-      posY += aY * 0.02;
-    });
-
+    // Reset on start
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
-      zeroGamma = lastGamma;
-      zeroBeta = lastBeta;
-      drawing = true;
-      // reset translation
-      posX = 0; posY = 0;
-    }, { passive: false });
-    laserBtn.addEventListener('touchend', e => { e.preventDefault(); drawing = false; });
+      drawing=true;
+      zeroGamma=lastGamma;
+      zeroBeta=lastBeta;
+      transX=0;
+      transY=0;
+    }, { passive:false });
+    laserBtn.addEventListener('touchend', e => { e.preventDefault(); drawing=false; });
 
-    let drawing = false;
+    // Device orientation
     window.addEventListener('deviceorientation', ev => {
-      lastGamma = ev.gamma; lastBeta = ev.beta;
+      lastGamma=ev.gamma||0;
+      lastBeta=ev.beta||0;
       if (!drawing) return;
-      let dH = useOrientation ? lastGamma - zeroGamma : 0;
-      let dV = useOrientation ? lastBeta - zeroBeta : 0;
-      // clamp
-      dH = Math.max(-maxHor, Math.min(maxHor, dH));
-      dV = Math.max(-maxVer, Math.min(maxVer, dV));
-      // Normalize orientation
-      const normX = (dH + maxHor) / (2 * maxHor);
-      const normY = 1 - ((dV + maxVer) / (2 * maxVer));
-      // Combine with translation
-      const translX = 0.5 + posX / window.innerWidth;
-      const translY = 0.5 - posY / window.innerHeight;
-      // final
-      const x = Math.max(0, Math.min(1, (normX + translX) / 2));
-      const y = Math.max(0, Math.min(1, (normY + translY) / 2));
-      socket.emit('draw', { x, y, deviceId: socket.id });
+      // compute rotational part
+      let dH=(lastGamma-zeroGamma);
+      if(dH>180)dH-=360;
+      if(dH<-180)dH+=360;
+      let dV=(lastBeta-zeroBeta);
+      dH=Math.max(-maxHor,Math.min(maxHor,dH));
+      dV=Math.max(-maxVer,Math.min(maxVer,dV));
+      const rotX=(dH+maxHor)/(2*maxHor);
+      const rotY=1-((dV+maxVer)/(2*maxVer));
+      // combine with translation
+      // final X = rotX + scale * transX
+      const scale=0.005; // increase sensitivity
+      let x=rotX + transX*scale;
+      let y=rotY - transY*scale;
+      x=Math.max(0,Math.min(1,x));
+      y=Math.max(0,Math.min(1,y));
+      socket.emit('draw',{ x,y, deviceId: socket.id });
+    });
+
+    // Device motion for translation
+    window.addEventListener('devicemotion', ev => {
+      if (!drawing) return;
+      // use accelerationIncludingGravity for simpler detection
+      transX += (ev.accelerationIncludingGravity.x||0);
+      transY += (ev.accelerationIncludingGravity.y||0);
     });
 
     // iOS fallback
-    window.addEventListener('click', async () => {
-      if (DeviceOrientationEvent?.requestPermission) await DeviceOrientationEvent.requestPermission().catch(console.warn);
+    window.addEventListener('click', async ()=>{
+      if(DeviceOrientationEvent?.requestPermission) await DeviceOrientationEvent.requestPermission().catch(console.warn);
     });
   </script>
 </body>
