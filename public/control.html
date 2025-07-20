@@ -2,90 +2,101 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Control</title>
   <style>
     html, body { margin:0; padding:0; height:100%; background:#222; color:#fff; font-family:sans-serif; }
     body { display:flex; flex-direction:column; align-items:center; justify-content:center; overflow:hidden; }
-    #version { position:absolute; top:10px; right:10px; opacity:0.8; font-size:0.9em; }
-    #gyroBtn, #laserBtn {
-      font-size:1.2em; padding:0.5em 1em; margin:0.5em;
-      color:#fff; background:#444; border:4px solid transparent;
-      border-radius:4px; transition:border-color .3s;
-    }
+    #version { position:absolute; top:10px; right:10px; font-size:0.9em; opacity:0.8; }
+    #gyroBtn, #laserBtn { font-size:1.2em; padding:0.5em 1em; margin:0.5em; color:#fff; background:#444; border:4px solid transparent; border-radius:4px; transition:border-color .3s; }
     #laserBtn { width:100px; height:100px; border-radius:50%; background:red; display:none; }
   </style>
 </head>
 <body>
-  <div id="version">v1.3 Control</div>
+  <div id="version">v1.4 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    // Connect & Identify
+    // Identify and request settings
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    // Meine Farbe
-    let myColor = '#0cf';
+    let maxHor = 20, maxVer = 20, smoothing = 0.5;
+    socket.on('settings', ({ maxHor: h, maxVer: v, smoothing: s }) => { maxHor = h; maxVer = v; smoothing = s; });
+
+    // Assigned color for ring
     socket.on('assigned-color', color => {
-      myColor = color;
-      document.getElementById('laserBtn').style.borderColor = myColor;
+      document.getElementById('laserBtn').style.borderColor = color;
     });
 
-    // Winkel‑Settings
-    let maxHor=20, maxVer=20;
-    socket.on('settings', ({ maxHor:h, maxVer:v }) => {
-      maxHor = h;
-      maxVer = v;
-    });
-
-    const gyroBtn  = document.getElementById('gyroBtn');
+    const gyroBtn = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let drawing=false, zeroA=0, zeroB=0, lastAlpha=0, lastBeta=0;
+    let useOrientation = false;
+    let zeroGamma = 0, zeroBeta = 0;
+    let lastGamma = 0, lastBeta = 0;
+    // For motion-based translation
+    let posX = 0, posY = 0;
+    let lastAccelX = 0, lastAccelY = 0;
 
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
-        if (perm!=='granted') return alert('Gyro‑Zugriff benötigt!');
+        if (perm !== 'granted') return alert('Gyro‑Zugriff benötigt!');
       }
-      gyroBtn.style.display  = 'none';
+      useOrientation = true;
+      gyroBtn.style.display = 'none';
       laserBtn.style.display = 'block';
+    });
+
+    // Listen motion
+    window.addEventListener('devicemotion', ev => {
+      // accumulate acceleration (without gravity) to pos
+      const aX = ev.accelerationIncludingGravity.x || 0;
+      const aY = ev.accelerationIncludingGravity.y || 0;
+      // integrate simple
+      posX += aX * 0.02; // scale factor
+      posY += aY * 0.02;
     });
 
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
-      drawing=true;
-      zeroA = lastAlpha;
-      zeroB = lastBeta;
-    }, { passive:false });
-    laserBtn.addEventListener('touchend', e => {
-      e.preventDefault();
-      drawing=false;
-    });
+      zeroGamma = lastGamma;
+      zeroBeta = lastBeta;
+      drawing = true;
+      // reset translation
+      posX = 0; posY = 0;
+    }, { passive: false });
+    laserBtn.addEventListener('touchend', e => { e.preventDefault(); drawing = false; });
 
+    let drawing = false;
     window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha;
-      lastBeta  = ev.beta;
+      lastGamma = ev.gamma; lastBeta = ev.beta;
       if (!drawing) return;
-      let dA = lastAlpha-zeroA; if(dA>180) dA-=360; if(dA<-180) dA+=360;
-      let dB = lastBeta-zeroB;
-      dA = Math.max(-maxHor,Math.min(maxHor,dA));
-      dB = Math.max(-maxVer,Math.min(maxVer,dB));
-      const x = 1-((dA+maxHor)/(2*maxHor));
-      const y = 1-((dB+maxVer)/(2*maxVer));
-      socket.emit('draw',{x,y,deviceId:socket.id});
+      let dH = useOrientation ? lastGamma - zeroGamma : 0;
+      let dV = useOrientation ? lastBeta - zeroBeta : 0;
+      // clamp
+      dH = Math.max(-maxHor, Math.min(maxHor, dH));
+      dV = Math.max(-maxVer, Math.min(maxVer, dV));
+      // Normalize orientation
+      const normX = (dH + maxHor) / (2 * maxHor);
+      const normY = 1 - ((dV + maxVer) / (2 * maxVer));
+      // Combine with translation
+      const translX = 0.5 + posX / window.innerWidth;
+      const translY = 0.5 - posY / window.innerHeight;
+      // final
+      const x = Math.max(0, Math.min(1, (normX + translX) / 2));
+      const y = Math.max(0, Math.min(1, (normY + translY) / 2));
+      socket.emit('draw', { x, y, deviceId: socket.id });
     });
 
-    // iOS‑Fallback
+    // iOS fallback
     window.addEventListener('click', async () => {
-      if (DeviceOrientationEvent?.requestPermission) {
-        await DeviceOrientationEvent.requestPermission().catch(console.warn);
-      }
+      if (DeviceOrientationEvent?.requestPermission) await DeviceOrientationEvent.requestPermission().catch(console.warn);
     });
   </script>
 </body>
