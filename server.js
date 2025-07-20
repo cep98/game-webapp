@@ -15,26 +15,38 @@ let settings = {
   smoothing:  0.5
 };
 
+// Farbpalette für Controls
+const COLORS = [
+  '#e6194b', // rot
+  '#3cb44b', // grün
+  '#ffe119', // gelb
+  '#4363d8', // blau
+  '#f58231', // orange
+  '#911eb4', // lila
+  '#46f0f0', // türkis
+  '#f032e6'  // magenta
+];
+
 // Routen
 app.get('/',        (req, res) => res.sendFile(path.join(__dirname, 'public', 'game.html')));
 app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'public', 'control.html')));
 app.get('/admin',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
 
-// Aktive Clients: socketId -> { role, deviceId }
+// Aktive Clients: socketId -> { role, deviceId, color? }
 const clients = {};
 
-io.on('connection', socket => {
+oi.on('connection', socket => {
   // Hilfsfunktion: Liste der Clients an Admins senden
   function sendClientList() {
-    const list = Object.entries(clients).map(([id, { role, deviceId }]) => {
+    const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => {
       const sock = io.sockets.sockets.get(id);
       return {
         type: role,
-        deviceId: deviceId,
-        ip: sock ? sock.handshake.address : null
+        deviceId,
+        ip: sock ? sock.handshake.address : null,
+        ...(color ? { color } : {})
       };
     });
-    // Nur an Admins senden
     for (let adminId in clients) {
       if (clients[adminId].role === 'admin') {
         io.to(adminId).emit('client-list', list);
@@ -44,7 +56,19 @@ io.on('connection', socket => {
 
   // Identifikation
   socket.on('identify', ({ role, deviceId }) => {
-    clients[socket.id] = { role, deviceId };
+    // Farbzuweisung nur für Control-Rolle
+    let color;
+    if (role === 'control') {
+      const controlCount = Object.values(clients).filter(c => c.role === 'control').length;
+      color = COLORS[controlCount % COLORS.length];
+    }
+    clients[socket.id] = { role, deviceId, ...(color ? { color } : {}) };
+
+    // Farbe an Control-Client senden
+    if (color) {
+      socket.emit('assign-color', color);
+    }
+
     // Client-Liste an Admins aktualisieren
     sendClientList();
   });
@@ -70,7 +94,6 @@ io.on('connection', socket => {
   // Disconnect
   socket.on('disconnect', () => {
     delete clients[socket.id];
-    // Client-Liste an Admins aktualisieren
     sendClientList();
   });
 });
