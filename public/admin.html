@@ -11,6 +11,7 @@
     #settings { display:flex; gap:1em; align-items:center; }
     label { font-size:0.9em; }
     input[type=number], input[type=range] { width:4em; }
+    #version { font-size:0.9em; opacity:0.7; }
     #clients { list-style:none; padding:0; margin:1em; }
     #clients li { padding:0.5em; border-bottom:1px solid #333; }
   </style>
@@ -18,6 +19,9 @@
 <body>
   <header>
     <h1>Admin-Panel</h1>
+    <div>
+      <span id="version">v1.4 Admin</span>
+    </div>
     <div id="settings">
       <label>Max. Winkel H:<input id="maxHor" type="number" min="0" max="180" value="20" />°</label>
       <label>Max. Winkel V:<input id="maxVer" type="number" min="0" max="180" value="20" />°</label>
@@ -37,7 +41,7 @@
     socket.on('connect', () => {
       // Als Admin identifizieren
       socket.emit('identify', { role:'admin', deviceId: null });
-      // Direkt nach der Identifikation kommt vom Server automatisch ein 'client-list'-Event
+      // Der Server schickt sofort ein 'client-list'-Event
     });
 
     // UI-Elemente
