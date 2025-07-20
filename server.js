@@ -12,10 +12,13 @@ let colorIndex = 0;
 // Statische Dateien ausliefern
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Aktuelle Einstellungen
-let settings = { maxHor:20, maxVer:20, smoothing:0.5 };
+// Aktuelle Einstellungen: Max‑Bewegung in cm und Glättung
+let settings = {
+  maxMove:   30,   // in cm
+  smoothing: 0.5
+};
 
-// Map aller Clients
+// Map aller verbundenen Clients
 const clients = {};
 
 function broadcastClientList() {
@@ -37,28 +40,28 @@ io.on('connection', socket => {
 
   socket.on('identify', ({ role, deviceId }) => {
     clients[socket.id] = { role, deviceId, ip };
-    // Bei Control: Farbe zuweisen
     if (role === 'control') {
       const col = COLORS[colorIndex++ % COLORS.length];
       clients[socket.id].color = col;
-      socket.emit('assigned-color', col);           // ans Control selbst
-      io.emit('assigned-color', { deviceId, color: col }); // an alle Displays
+      socket.emit('assigned-color', col);
+      io.emit('assigned-color', { deviceId, color: col });
     }
     broadcastClientList();
 
-    // Settings
-    socket.on('request-settings', () => socket.emit('settings', settings));
+    // Settings-Events
+    socket.on('request-settings', () => {
+      socket.emit('settings', settings);
+    });
     socket.on('update-settings', data => {
       settings = { ...settings, ...data };
-      // an alle Control & Display
-      Object.entries(clients).forEach(([id,c]) => {
-        if (c.role==='control' || c.role==='display') {
+      Object.entries(clients).forEach(([id, c]) => {
+        if (c.role === 'control' || c.role === 'display') {
           io.to(id).emit('settings', settings);
         }
       });
     });
 
-    // Control → Game
+    // Control → Display
     socket.on('draw', payload => socket.broadcast.emit('draw', payload));
 
     socket.on('disconnect', () => {
@@ -68,5 +71,5 @@ io.on('connection', socket => {
   });
 });
 
-const PORT = process.env.PORT||3000;
+const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
