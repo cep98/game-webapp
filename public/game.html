@@ -28,10 +28,32 @@
 
     // Ball-Objekt mit Rotation
     let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20, angle: 0, angularVelocity: 0 };
-
-    // Tore und Zähler
     let scoreLeft = 0;
     let scoreRight = 0;
+
+    // Pointer-History
+    const pointers = {};
+
+    // Globale Settings
+    let smoothing = 0.5;
+    socket.on('settings', data => { smoothing = data.smoothing; });
+
+    // Laser-Status pro Pointer
+    socket.on('laser', ({ deviceId, on }) => {
+      if (pointers[deviceId]) pointers[deviceId].laser = on;
+    });
+
+    socket.on('draw', ({ x, y, deviceId }) => {
+      pointers[deviceId] = { x: x * W, y: y * H, ttl: PTR_TTL, laser: pointers[deviceId]?.laser || false };
+    });
+
+    const FRICTION         = 0.995;
+    const ANGULAR_FRICTION = 0.95;
+    const BOUNCE           = 0.8;
+    const BASE_STRENGTH    = 0.3;
+    const SPEED_SCALE      = 0.0005;
+    const PTR_TTL          = 500;
+
     function resetBall() {
       ball.x = W/2;
       ball.y = H/2;
@@ -40,48 +62,78 @@
       ball.angularVelocity = 0;
     }
 
-    // Globale Settings
-    let smoothing = 0.5;
-    socket.on('settings', data => { smoothing = data.smoothing; });
-
-    // Konstanten (unverändert)
-    const FRICTION         = 0.995;
-    const ANGULAR_FRICTION = 0.95;
-    const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.3;
-    const SPEED_SCALE      = 0.0005;
-    const PTR_TTL          = 500;
-    const PTR_R            = 16;
-
-    // Pointer-History (unverändert)
-    const pointers = {};
-    socket.on('draw', ({ x, y, deviceId }) => { /* unverändert */ });
-
-    function cleanup(now) { /* unverändert */ }
+    function cleanup(now) {
+      for (let id in pointers) {
+        pointers[id].ttl -= now;
+        if (pointers[id].ttl <= 0) delete pointers[id];
+      }
+    }
 
     function update(dt) {
-      // bestehende Physik-Logik
-      // ...
+      // Physik anwenden
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
+
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+      ball.angle += ball.angularVelocity * dt;
+
+      // Kollision mit oberen und unteren Wänden
+      if (ball.y - ball.r < 0 || ball.y + ball.r > H) {
+        ball.vy = -ball.vy * BOUNCE;
+      }
 
       // Tor-Erkennung
       if (ball.x - ball.r <= 0) {
         scoreRight++;
         resetBall();
-      }
-      if (ball.x + ball.r >= W) {
+      } else if (ball.x + ball.r >= W) {
         scoreLeft++;
         resetBall();
       }
 
-      // gültige Kollisionen mit Wänden (unverändert)
-      // ...
+      cleanup(dt);
     }
 
     function draw() {
       ctx.clearRect(0, 0, W, H);
 
-      // Ball zeichnen (unverändert)
-      // ...
+      // Tore zeichnen
+      const goalWidth = 10;
+      ctx.strokeStyle = '#0cf';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(0, H * 0.25, goalWidth, H * 0.5);
+      ctx.strokeRect(W - goalWidth, H * 0.25, goalWidth, H * 0.5);
+
+      // Ball zeichnen
+      ctx.save();
+      ctx.translate(ball.x, ball.y);
+      ctx.rotate(ball.angle);
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(0, 0, ball.r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+
+      // Pointer und Laser zeichnen
+      for (let id in pointers) {
+        const p = pointers[id];
+        // Pointer-Kugel
+        ctx.fillStyle = 'rgba(255, 0, 0, 0.5)';
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 16, 0, 2 * Math.PI);
+        ctx.fill();
+        // Laser-Linie
+        if (p.laser) {
+          ctx.strokeStyle = 'red';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(ball.x, ball.y);
+          ctx.stroke();
+        }
+      }
 
       // Zähler anzeigen
       ctx.fillStyle = '#0cf';
@@ -91,7 +143,7 @@
       ctx.fillText(scoreRight, W * 0.75, 60);
     }
 
-    // Spielschleife (unverändert)
+    // Spielschleife
     let last = performance.now();
     (function loop(now) {
       const dt = (now - last) / 16.67;
