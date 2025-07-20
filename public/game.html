@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.1 Game</div>
+  <div id="version">v1.2 Game</div>
   <canvas id="canvas" width="1024" height="1024"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -37,8 +37,8 @@
     const FRICTION         = 0.995;
     const ANGULAR_FRICTION = 0.95;
     const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.15;    // weiter reduziert
-    const SPEED_SCALE      = 0.0002;  // weiter reduziert
+    const BASE_STRENGTH    = 0.15;
+    const SPEED_SCALE      = 0.0002;
     const PTR_TTL          = 500;
     const PTR_R            = 16;
 
@@ -80,13 +80,17 @@
         const dxSeg = p.sx - p.px;
         const dySeg = p.sy - p.py;
         const segLen = Math.hypot(dxSeg, dySeg);
-        const steps = Math.max(Math.ceil(segLen / (ball.r + PTR_R)), 5);
+        // Sampling: Mindestschritte für präzisere Kollision
+        const pixelStep = Math.max(ball.r / 4, 1);
+        const steps = Math.max(Math.ceil(segLen / pixelStep), 10);
         let hit = false;
         for (let i = 0; i <= steps; i++) {
           const t = i / steps;
           const ix = p.px + dxSeg * t;
           const iy = p.py + dySeg * t;
-          if ((ball.x - ix)**2 + (ball.y - iy)**2 <= (ball.r + PTR_R)**2) {
+          const dxB = ball.x - ix;
+          const dyB = ball.y - iy;
+          if (dxB*dxB + dyB*dyB <= (ball.r + PTR_R)**2) {
             hit = true;
             break;
           }
