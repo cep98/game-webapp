@@ -34,70 +34,61 @@ app.get('/admin',   (req, res) => res.sendFile(path.join(__dirname, 'public', 'a
 
 // Aktive Clients: socketId -> { role, deviceId, color? }
 const clients = {};
+let controlCount = 0;
 
-oi.on('connection', socket => {
+// Verbindungen
+io.on('connection', socket => {
   // Hilfsfunktion: Liste der Clients an Admins senden
   function sendClientList() {
-    const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => {
-      const sock = io.sockets.sockets.get(id);
-      return {
-        type: role,
-        deviceId,
-        ip: sock ? sock.handshake.address : null,
-        ...(color ? { color } : {})
-      };
-    });
-    for (let adminId in clients) {
-      if (clients[adminId].role === 'admin') {
-        io.to(adminId).emit('client-list', list);
-      }
+    const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
+      type: role,
+      deviceId,
+      ip: io.sockets.sockets.get(id)?.handshake.address || null,
+      color
+    }));
+    // Nur an Admins senden
+    for (let [id, c] of Object.entries(clients)) {
+      if (c.role === 'admin') io.to(id).emit('client-list', list);
     }
   }
 
   // Identifikation
   socket.on('identify', ({ role, deviceId }) => {
-    // Farbzuweisung nur für Control-Rolle
     let color;
     if (role === 'control') {
-      const controlCount = Object.values(clients).filter(c => c.role === 'control').length;
       color = COLORS[controlCount % COLORS.length];
+      controlCount++;
     }
-    clients[socket.id] = { role, deviceId, ...(color ? { color } : {}) };
-
+    clients[socket.id] = { role, deviceId, color };
     // Farbe an Control-Client senden
-    if (color) {
-      socket.emit('assign-color', color);
-    }
-
+    if (color) socket.emit('assign-color', color);
     // Client-Liste an Admins aktualisieren
     sendClientList();
   });
 
-  // Admin: send settings
+  // Admin: Settings anfordern
   socket.on('request-settings', () => {
     socket.emit('settings', settings);
   });
 
-  // Admin: update settings
+  // Admin: Settings aktualisieren
   socket.on('update-settings', data => {
     settings = { ...settings, ...data };
-    for (let id in clients) {
-      if (clients[id].role === 'display') {
-        io.to(id).emit('settings', settings);
-      }
+    for (let [id, c] of Object.entries(clients)) {
+      if (c.role === 'display') io.to(id).emit('settings', settings);
     }
   });
 
   // Control-Input weiterleiten
   socket.on('draw', data => socket.broadcast.emit('draw', data));
 
-  // Disconnect
+  // Trennung
   socket.on('disconnect', () => {
     delete clients[socket.id];
     sendClientList();
   });
 });
 
-// Start
+// Server starten
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
