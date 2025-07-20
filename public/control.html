@@ -2,70 +2,96 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Control</title>
   <style>
-    html, body { margin:0; padding:0; height:100%; background:#222; color:#fff; font-family:sans-serif;
-                 display:flex; flex-direction:column; align-items:center; justify-content:center; }
-    #version { position:absolute; top:10px; right:10px; opacity:0.7; }
+    html, body {
+      margin:0; padding:0; height:100%; background:#222;
+      color:#fff; font-family:sans-serif;
+      display:flex; flex-direction:column; align-items:center; justify-content:center;
+    }
+    #version {
+      position:absolute; top:10px; right:10px; opacity:0.7; font-size:0.9em;
+    }
     #gyroBtn, #laserBtn {
-      font-size:1.2em; padding:0.5em 1em; margin:0.5em; color:#fff; background:#444;
-      border:4px solid transparent; border-radius:4px; transition:border-color .3s;
+      font-size:1.2em; padding:0.5em 1em; margin:0.5em;
+      color:#fff; background:#444;
+      border:4px solid transparent; border-radius:4px;
+      transition:border-color .3s;
     }
     #laserBtn {
-      width:100px; height:100px; border-radius:50%; background:red; display:none;
+      width:100px; height:100px; border-radius:50%;
+      background:red; display:none;
     }
   </style>
 </head>
 <body>
-  <div id="version">v1.6 Control</div>
+  <div id="version">v1.7 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
-    let myColor = null, drawing = false, zeroA=0, zeroB=0, lastAlpha=0, lastBeta=0;
+    const socket    = io();
+    const gyroBtn   = document.getElementById('gyroBtn');
+    const laserBtn  = document.getElementById('laserBtn');
+    let myColor     = null;
+    let drawing     = false;
+    let zeroA = 0, zeroB = 0, lastAlpha = 0, lastBeta = 0;
 
     socket.on('connect', () => {
-      socket.emit('identify', { role:'control', deviceId: socket.id });
+      socket.emit('identify',      { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    // Farbe zugewiesen bekommen
+    // Farbe vom Server bekommen, aber Button erst nach Permission zeigen
     socket.on('assign-color', color => {
       myColor = color;
-      document.getElementById('gyroBtn').style.display  = 'none';
-      const laserBtn = document.getElementById('laserBtn');
       laserBtn.style.borderColor = myColor;
-      laserBtn.style.display     = 'block';
     });
 
-    // Laser: start & end zeichnen
-    const laserBtn = document.getElementById('laserBtn');
+    // Gyro-Button: nach Permission Laser-Button anzeigen
+    gyroBtn.addEventListener('click', async () => {
+      if (DeviceOrientationEvent?.requestPermission) {
+        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
+        if (perm !== 'granted') {
+          return alert('Gyroskop‑Zugriff benötigt!');
+        }
+      }
+      // Wenn Farbe schon da ist, direkt wechseln
+      if (myColor) {
+        gyroBtn.style.display  = 'none';
+        laserBtn.style.display = 'block';
+      }
+    });
+
+    // Laser starten
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
       zeroA = lastAlpha; zeroB = lastBeta;
     }, { passive:false });
+
+    // Laser stoppen
     laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
       drawing = false;
-+     socket.emit('draw-end', { deviceId: socket.id });
+      socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
     window.addEventListener('deviceorientation', ev => {
       lastAlpha = ev.alpha; lastBeta = ev.beta;
       if (!drawing) return;
-      let dA = lastAlpha - zeroA; if (dA>180) dA-=360; if (dA<-180) dA+=360;
+      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
       let dB = lastBeta  - zeroB;
-      // Normieren (maxHor/maxVer kommen aus settings, nicht gezeigt)
-      const x = /* …berechnet… */;
-      const y = /* …berechnet… */;
+      // Normierung (gleiche Logik wie vorher, adapte maxHor/maxVer falls nötig):
+      const maxHor = 20, maxVer = 20;
+      dA = Math.max(-maxHor, Math.min(maxHor, dA));
+      dB = Math.max(-maxVer, Math.min(maxVer, dB));
+      const x = 1 - ((dA + maxHor) / (2 * maxHor));
+      const y = 1 - ((dB + maxVer) / (2 * maxVer));
       socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
     });
-
-    // (Gyro‑Button & Settings‑Handler bleiben unverändert)
   </script>
 </body>
 </html>
