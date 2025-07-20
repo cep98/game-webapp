@@ -2,12 +2,15 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Game Display</title>
   <style>
     html, body { margin:0; padding:0; height:100%; background:#000; overflow:hidden; }
-    canvas { display:block; }
-    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
+    #version {
+      position:absolute; top:10px; left:10px;
+      color:#fff; opacity:0.6; font-size:0.9em;
+    }
+    canvas { display:block; background:#000; }
   </style>
 </head>
 <body>
@@ -17,42 +20,145 @@
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-    socket.on('connect', () => socket.emit('identify', { role:'display', deviceId: socket.id }));
-
-    const canvas = document.getElementById('gameCanvas'),
-          ctx    = canvas.getContext('2d');
-    function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
-    window.addEventListener('resize', resize); resize();
-
-    const pointers   = {};
-    const deviceCols = {};
-    const COLORS     = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
-    let colIdx = 0;
-
-    socket.on('draw', ({ x, y, deviceId, color }) => {
-      // Nur beim Drücken kommen wir hierher
-      const px = x * canvas.width, py = y * canvas.height;
-      if (!deviceCols[deviceId]) {
-        deviceCols[deviceId] = color || COLORS[colIdx++ % COLORS.length];
-      }
-      pointers[deviceId] = { x: px, y: py };
+    socket.on('connect', () => {
+      socket.emit('identify', { role:'display', deviceId: socket.id });
+      socket.emit('request-settings');
     });
 
-    // Entferne Pointer, wenn losgelassen
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+    function resize() {
+      canvas.width  = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Ball-Physik (wie vorher)
+    const W = canvas.width, H = canvas.height;
+    let smoothing = 0.5;
+    const FRICTION=0.995, ANG_FRICTION=0.95, BOUNCE=0.8,
+          BASE_STRENGTH=0.15, SPEED_SCALE=0.0002, PTR_TTL=500, PTR_R=16;
+    let ball = { x:W/2, y:H/2, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
+    const ballImg = new Image(); ballImg.src = '/ball.png';
+
+    // Farb‑Zuordnung für Pointers
+    const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
+    const deviceColors = {};
+    let colorIndex = 0;
+
+    // Pointer-Daten
+    const pointers = {};
+
+    // Draw-Event: Pointer hinzufügen/aktualisieren
+    socket.on('draw', ({ x, y, deviceId, color }) => {
+      const now = performance.now();
+      const rawX = x * canvas.width, rawY = y * canvas.height;
+
+      // Farbe zuweisen (Payload hat Vorrang)
+      if (color) {
+        deviceColors[deviceId] = color;
+      } else if (!deviceColors[deviceId]) {
+        deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
+      }
+
+      const prev = pointers[deviceId];
+      if (prev) {
+        const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
+        const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
+        pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
+      } else {
+        pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
+      }
+    });
+
+    // Draw-End: Pointer entfernen
     socket.on('draw-end', ({ deviceId }) => {
       delete pointers[deviceId];
     });
 
-    ;(function loop(){
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      Object.entries(pointers).forEach(([id, p]) => {
-        ctx.fillStyle = deviceCols[id];
+    // Bereinigen alter Pointer
+    function cleanup(now) {
+      for (let id in pointers) {
+        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
+      }
+    }
+
+    // Update Ball-Physik
+    function update(dt) {
+      const now = performance.now();
+      cleanup(now);
+      // Kollisions-Logik wie gehabt...
+      for (let id in pointers) {
+        const p = pointers[id];
+        const dxSeg = p.sx - p.px, dySeg = p.sy - p.py;
+        const segLen = Math.hypot(dxSeg, dySeg);
+        const pixelStep = Math.max(ball.r/4, 1), steps = Math.ceil(segLen / pixelStep) || 1;
+        let hit = false;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const ix = p.px + dxSeg * t, iy = p.py + dySeg * t;
+          if ( (ball.x - ix)**2 + (ball.y - iy)**2 <= (ball.r + PTR_R)**2 ) {
+            hit = true; break;
+          }
+        }
+        if (hit) {
+          const midx = p.px + dxSeg * 0.5, midy = p.py + dySeg * 0.5;
+          let dx = ball.x - midx, dy = ball.y - midy;
+          const len = Math.hypot(dx, dy) || 1;
+          dx /= len; dy /= len;
+          const deltaT = Math.max(p.t - p.pt, 1),
+                speedPxS = segLen * 1000 / deltaT,
+                strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
+          ball.vx += dx * strength; ball.vy += dy * strength;
+          const rx = midx - ball.x, ry = midy - ball.y;
+          const tx = -dy, ty = dx;
+          ball.angularVelocity += (rx*ty - ry*tx) * strength * 0.005;
+        }
+        p.pt = p.t;
+      }
+      ball.x += ball.vx * dt; ball.y += ball.vy * dt;
+      ball.angle += ball.angularVelocity * dt;
+      // Bounds
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.x + ball.r > canvas.width) { ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y + ball.r > canvas.height) { ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
+      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANG_FRICTION;
+    }
+
+    // Draw Loop: Ball + Pointers
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (ballImg.complete) {
+        ctx.save();
+        ctx.translate(ball.x, ball.y);
+        ctx.rotate(ball.angle);
+        ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
+        ctx.restore();
+      }
+      for (let id in pointers) {
+        const p = pointers[id];
+        ctx.fillStyle = deviceColors[id];
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 20, 0, 2*Math.PI);
+        ctx.arc(p.sx, p.sy, PTR_R, 0, 2 * Math.PI);
         ctx.fill();
-      });
+      }
+    }
+
+    let last = performance.now();
+    (function loop(now) {
+      const dt = (now - last) / 16.67;
+      last = now;
+      update(dt);
+      draw();
       requestAnimationFrame(loop);
-    })();
+    })(last);
+
+    // Settings-Update (aktualisiert smoothing)
+    socket.on('settings', data => {
+      smoothing = data.smoothing;
+    });
   </script>
 </body>
 </html>
