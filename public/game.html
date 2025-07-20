@@ -1,74 +1,151 @@
-// server.js
-const express = require('express');
-const path    = require('path');
-const app     = express();
-const http    = require('http').createServer(app);
-const io      = require('socket.io')(http);
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Game</title>
+  <style>
+    body   { margin:0; background:#000; overflow:hidden; }
+    canvas { display:block; margin:auto; background:#000; }
+    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
+  </style>
+</head>
+<body>
+  <div id="version">v1.1 Game</div>
+  <canvas id="canvas" width="1024" height="1024"></canvas>
 
-// Statische Dateien ausliefern
-app.use(express.static(path.join(__dirname, 'public')));
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    socket.on('connect', () => {
+      socket.emit('identify', { role:'display', deviceId: null });
+      socket.emit('request-settings');
+    });
 
-// Aktuelle Einstellungen
-let settings = {
-  maxHor:    20,
-  maxVer:    20,
-  smoothing: 0.5
-};
+    const canvas = document.getElementById('canvas');
+    const ctx    = canvas.getContext('2d');
+    const W      = canvas.width;
+    const H      = canvas.height;
 
-// Map aller verbundenen Clients
-// socket.id => { role, deviceId, ip }
-const clients = {};
+    // Ball-Objekt mit Rotation
+    let ball = { x: W/2, y: H/2, vx: 0, vy: 0, r: 20, angle: 0, angularVelocity: 0 };
 
-// Hilfsfunktion: Liste aller Clients an Admins senden
-function broadcastClientList() {
-  const list = Object.values(clients).map(c => ({
-    type:     c.role,      // control, display, admin
-    deviceId: c.deviceId,
-    ip:       c.ip
-  }));
-  for (let id in clients) {
-    if (clients[id].role === 'admin') {
-      io.to(id).emit('client-list', list);
+    // Globale Settings
+    let smoothing = 0.5;
+
+    // Konstanten – reduziert für weniger Beschleunigung
+    const FRICTION         = 0.995;
+    const ANGULAR_FRICTION = 0.95;
+    const BOUNCE           = 0.8;
+    const BASE_STRENGTH    = 0.15;    // weiter reduziert
+    const SPEED_SCALE      = 0.0002;  // weiter reduziert
+    const PTR_TTL          = 500;
+    const PTR_R            = 16;
+
+    // Ball-Grafik
+    const ballImg = new Image();
+    ballImg.src   = '/ball.png';
+
+    const pointers = {};
+
+    socket.on('settings', data => {
+      smoothing = data.smoothing;
+    });
+
+    socket.on('draw', ({ x, y, deviceId }) => {
+      const now  = performance.now();
+      const rawX = x * W;
+      const rawY = y * H;
+      const prev = pointers[deviceId];
+      if (prev) {
+        const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
+        const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
+        pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
+      } else {
+        pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
+      }
+    });
+
+    function cleanup(now) {
+      for (let id in pointers) {
+        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
+      }
     }
-  }
-}
 
-io.on('connection', socket => {
-  const ip = socket.handshake.address;
-
-  // Identifikation: role & deviceId
-  socket.on('identify', ({ role, deviceId }) => {
-    clients[socket.id] = { role, deviceId, ip };
-    broadcastClientList();
-
-    // Auf Settings-Request initiale Werte schicken
-    socket.on('request-settings', () => {
-      socket.emit('settings', settings);
-    });
-
-    // Admin updatet Settings
-    socket.on('update-settings', data => {
-      settings = { ...settings, ...data };
-      // Neue Settings an alle control/display senden
-      Object.entries(clients).forEach(([id, c]) => {
-        if (c.role === 'control' || c.role === 'display') {
-          io.to(id).emit('settings', settings);
+    function update(dt) {
+      const now = performance.now();
+      cleanup(now);
+      for (let id in pointers) {
+        const p = pointers[id];
+        const dxSeg = p.sx - p.px;
+        const dySeg = p.sy - p.py;
+        const segLen = Math.hypot(dxSeg, dySeg);
+        const steps = Math.max(Math.ceil(segLen / (ball.r + PTR_R)), 5);
+        let hit = false;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const ix = p.px + dxSeg * t;
+          const iy = p.py + dySeg * t;
+          if ((ball.x - ix)**2 + (ball.y - iy)**2 <= (ball.r + PTR_R)**2) {
+            hit = true;
+            break;
+          }
         }
-      });
-    });
+        if (hit) {
+          const midx = p.px + dxSeg * 0.5;
+          const midy = p.py + dySeg * 0.5;
+          let dx = ball.x - midx;
+          let dy = ball.y - midy;
+          const len = Math.hypot(dx, dy) || 1;
+          dx /= len; dy /= len;
+          const deltaT = Math.max(p.t - p.pt, 1);
+          const speedPxS = segLen * 1000 / deltaT;
+          const strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
+          ball.vx += dx * strength;
+          ball.vy += dy * strength;
+          const rx = midx - ball.x;
+          const ry = midy - ball.y;
+          const tx = -dy;
+          const ty = dx;
+          const spinImp = (rx * ty - ry * tx) * strength * 0.005;
+          ball.angularVelocity += spinImp;
+        }
+        p.pt = p.t;
+      }
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+      ball.angle += ball.angularVelocity * dt;
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.x + ball.r > W) { ball.x = W - ball.r; ball.vx = -ball.vx * BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y + ball.r > H) { ball.y = H - ball.r; ball.vy = -ball.vy * BOUNCE; ball.angularVelocity *= -1; }
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
+    }
 
-    // Control sendet draw
-    socket.on('draw', payload => {
-      socket.broadcast.emit('draw', payload);
-    });
+    function draw() {
+      ctx.clearRect(0, 0, W, H);
+      if (ballImg.complete) {
+        ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.angle);
+        ctx.drawImage(ballImg, -ball.r, -ball.r, ball.r*2, ball.r*2);
+        ctx.restore();
+      }
+      ctx.fillStyle = '#0cf';
+      for (let id in pointers) {
+        const p = pointers[id];
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI); ctx.fill();
+      }
+    }
 
-    // Trennung
-    socket.on('disconnect', () => {
-      delete clients[socket.id];
-      broadcastClientList();
-    });
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
+    let last = performance.now();
+    (function loop(now) {
+      const dt = (now - last) / 16.67;
+      last = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    })(last);
+  </script>
+</body>
+</html>
