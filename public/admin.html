@@ -14,26 +14,27 @@
     input[type=number], input[type=range] { width:4em; }
     #clients { list-style:none; padding:0; margin:1em; }
     #clients li {
-      display:flex; align-items:center;
+      display:flex; align-items:center; justify-content:space-between;
       padding:0.5em 0; border-bottom:1px solid #333;
     }
-    .dot {
-      width:12px; height:12px;
-      border-radius:50%;
-      display:inline-block;
-      margin-right:0.75em;
-      flex-shrink:0;
-      background:#666;
+    .left {
+      display:flex; align-items:center;
     }
-    .client-info {
-      font-size:0.95em;
+    .dot {
+      width:12px; height:12px; border-radius:50%;
+      display:inline-block; margin-right:0.75em; background:#666;
+    }
+    .client-info { font-size:0.95em; }
+    .kill-btn {
+      background:transparent; border:none; color:#f55;
+      font-size:1.2em; cursor:pointer;
     }
   </style>
 </head>
 <body>
   <header>
     <h1>Admin-Panel</h1>
-    <div id="version">v1.5 Admin</div>
+    <div id="version">v1.6 Admin</div>
     <div id="settings">
       <label>Max. Winkel H:<input id="maxHor" type="number" min="0" max="180" value="20" />°</label>
       <label>Max. Winkel V:<input id="maxVer" type="number" min="0" max="180" value="20" />°</label>
@@ -73,28 +74,46 @@
       sendSettings();
     });
 
+    // Client-Liste mit Kill-Buttons rendern
     socket.on('client-list', list => {
       clientsList.innerHTML = '';
       list.forEach(c => {
         const li = document.createElement('li');
+        const left = document.createElement('div');
+        left.classList.add('left');
 
         // Farbpunkt
         const dot = document.createElement('span');
         dot.classList.add('dot');
-        if (c.color) {
-          dot.style.backgroundColor = c.color;
-        }
-        li.appendChild(dot);
+        if (c.color) dot.style.backgroundColor = c.color;
+        left.appendChild(dot);
 
-        // Text
+        // Info-Text
         const info = document.createElement('span');
         info.classList.add('client-info');
         info.textContent = `${c.type} – ${c.deviceId} – ${c.ip}`;
-        li.appendChild(info);
+        left.appendChild(info);
+
+        li.appendChild(left);
+
+        // Nur bei control-Clients: Kill-Button
+        if (c.type === 'control') {
+          const btn = document.createElement('button');
+          btn.classList.add('kill-btn');
+          btn.textContent = '🗑️';
+          btn.title = 'Client kicken';
+          btn.onclick = () => {
+            socket.emit('kill-client', { socketId: c.socketId });
+          };
+          li.appendChild(btn);
+        }
 
         clientsList.appendChild(li);
       });
     });
+
+    // Optional: Feedback, wenn Client neu laden soll
+    socket.on('client-list', list => { /* bleibt leer */ });
   </script>
 </body>
 </html>
