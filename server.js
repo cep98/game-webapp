@@ -5,7 +5,7 @@ const app     = express();
 const http    = require('http').createServer(app);
 const io      = require('socket.io')(http);
 
-// Statische Auslieferung
+// Statische Auslieferung aus /public
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Defaults für Settings
@@ -17,19 +17,13 @@ let settings = {
 
 // Farbpalette für Controls
 const COLORS = [
-  '#e6194b', // rot
-  '#3cb44b', // grün
-  '#ffe119', // gelb
-  '#4363d8', // blau
-  '#f58231', // orange
-  '#911eb4', // lila
-  '#46f0f0', // türkis
-  '#f032e6'  // magenta
+  '#e6194b', '#3cb44b', '#ffe119', '#4363d8',
+  '#f58231', '#911eb4', '#46f0f0', '#f032e6'
 ];
 
 // Tracking aller Clients
-const clients    = {};  // socketId → { role, deviceId, color? }
-let controlCount = 0;
+const clients      = {};  // socketId → { role, deviceId, color? }
+let controlCount   = 0;
 
 // Hilfsfunktion: Client-Liste an alle Admins senden
 function sendClientList() {
@@ -39,6 +33,9 @@ function sendClientList() {
     ip:       io.sockets.sockets.get(id)?.handshake.address || '–',
     color:    color || null
   }));
+  // Debug
+  console.log('Aktuelle Clients:', list);
+  // An jeden Admin senden
   Object.entries(clients).forEach(([id, c]) => {
     if (c.role === 'admin') {
       io.to(id).emit('client-list', list);
@@ -51,23 +48,23 @@ io.on('connection', socket => {
   socket.on('identify', ({ role, deviceId }) => {
     let color = null;
     if (role === 'control') {
-      // Zyklische Zuweisung
       color = COLORS[controlCount % COLORS.length];
       controlCount++;
-      // Farbe direkt zurücksenden
+      // Farbe direkt an das Control senden
       socket.emit('assign-color', color);
     }
     clients[socket.id] = { role, deviceId, color };
     sendClientList();
   });
 
-  // Admin-Settings
+  // Admin: Settings anfordern
   socket.on('request-settings', () => {
     socket.emit('settings', settings);
   });
+  // Admin: Settings updaten
   socket.on('update-settings', data => {
     settings = { ...settings, ...data };
-    // an alle Displays weiterschicken
+    // an alle Displays weiterleiten
     Object.entries(clients).forEach(([id, c]) => {
       if (c.role === 'display') {
         io.to(id).emit('settings', settings);
@@ -78,6 +75,10 @@ io.on('connection', socket => {
   // Control‑Input weiterleiten
   socket.on('draw', data => {
     socket.broadcast.emit('draw', data);
+  });
+  // Ende der Zeichnung weiterleiten
+  socket.on('draw-end', data => {
+    socket.broadcast.emit('draw-end', data);
   });
 
   // Disconnect
