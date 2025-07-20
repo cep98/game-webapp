@@ -33,8 +33,11 @@
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
+
     socket.on('connect', () => {
+      // Als Admin identifizieren
       socket.emit('identify', { role:'admin', deviceId: null });
+      // Direkt nach der Identifikation kommt vom Server automatisch ein 'client-list'-Event
     });
 
     // UI-Elemente
@@ -44,7 +47,7 @@
     const smoothingVal   = document.getElementById('smoothingVal');
     const clientsList    = document.getElementById('clients');
 
-    // Änderungen senden
+    // Settings-Änderungen senden
     function sendSettings() {
       const maxHor    = parseFloat(maxHorInput.value);
       const maxVer    = parseFloat(maxVerInput.value);
@@ -58,12 +61,12 @@
       sendSettings();
     });
 
-    // Client-Liste aktualisieren
+    // Client-Liste empfangen und anzeigen
     socket.on('client-list', list => {
       clientsList.innerHTML = '';
       list.forEach(c => {
         const li = document.createElement('li');
-        li.textContent = `${c.type} - ${c.deviceId || 'n/a'} - ${c.ip}`;
+        li.textContent = `${c.type} – ${c.deviceId || 'n/a'} – ${c.ip || '–'}`;
         clientsList.appendChild(li);
       });
     });
