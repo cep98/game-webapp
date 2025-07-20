@@ -25,7 +25,7 @@ const COLORS = [
 const clients      = {};  // socketId → { role, deviceId, color? }
 let controlCount   = 0;
 
-// Hilfsfunktion: Client-Liste an alle Admins senden
+// Client‑Liste an Admins senden
 function sendClientList() {
   const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
     socketId: id,
@@ -34,9 +34,6 @@ function sendClientList() {
     ip:       io.sockets.sockets.get(id)?.handshake.address || '–',
     color:    color || null
   }));
-  // Debug
-  console.log('Aktuelle Clients:', list);
-  // An jeden Admin senden
   for (let [id, c] of Object.entries(clients)) {
     if (c.role === 'admin') {
       io.to(id).emit('client-list', list);
@@ -51,48 +48,33 @@ io.on('connection', socket => {
     if (role === 'control') {
       color = COLORS[controlCount % COLORS.length];
       controlCount++;
-      // Farbe direkt an das Control senden
       socket.emit('assign-color', color);
     }
     clients[socket.id] = { role, deviceId, color };
     sendClientList();
   });
 
-  // Admin: Settings anfordern
-  socket.on('request-settings', () => {
-    socket.emit('settings', settings);
-  });
-  // Admin: Settings updaten
+  // Admin‑Settings
+  socket.on('request-settings', () => socket.emit('settings', settings));
   socket.on('update-settings', data => {
     settings = { ...settings, ...data };
-    // an alle Displays weiterleiten
     for (let [id, c] of Object.entries(clients)) {
-      if (c.role === 'display') {
-        io.to(id).emit('settings', settings);
-      }
+      if (c.role === 'display') io.to(id).emit('settings', settings);
     }
   });
 
-  // Control‑Input weiterleiten
-  socket.on('draw', data => {
-    socket.broadcast.emit('draw', data);
-  });
-  socket.on('draw-end', data => {
-    socket.broadcast.emit('draw-end', data);
-  });
+  // Draw‑Events weiterleiten
+  socket.on('draw',     data => socket.broadcast.emit('draw', data));
+  socket.on('draw-end', data => socket.broadcast.emit('draw-end', data));
 
-  // Admin: Handy aus Session kicken
+  // Admin: Client kicken
   socket.on('kill-client', ({ socketId }) => {
-    // Nur Admins dürfen
     const me = clients[socket.id];
     if (!me || me.role !== 'admin') return;
-    // Existiert Client?
     if (clients[socketId]) {
-      // Ziel‑Client benachrichtigen
-      io.to(socketId).emit('force-reload');
-      // Entfernen
+      const target = io.sockets.sockets.get(socketId);
+      if (target) target.disconnect(true);
       delete clients[socketId];
-      // Liste an Admins aktualisieren
       sendClientList();
     }
   });
