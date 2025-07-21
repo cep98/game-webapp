@@ -22,10 +22,10 @@ const COLORS = [
 ];
 
 // Tracking aller Clients
-const clients      = {};  // socketId → { role, deviceId, color? }
-let controlCount   = 0;
+const clients    = {};  // socketId → { role, deviceId, color? }
+let controlCount = 0;
 
-// Client‑Liste an Admins senden
+// Hilfsfunktion: Client‑Liste an alle Admins senden
 function sendClientList() {
   const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
     socketId: id,
@@ -54,18 +54,35 @@ io.on('connection', socket => {
     sendClientList();
   });
 
-  // Admin‑Settings
-  socket.on('request-settings', () => socket.emit('settings', settings));
+  // Admin: Settings anfordern / updaten
+  socket.on('request-settings', () => {
+    socket.emit('settings', settings);
+  });
   socket.on('update-settings', data => {
     settings = { ...settings, ...data };
     for (let [id, c] of Object.entries(clients)) {
-      if (c.role === 'display') io.to(id).emit('settings', settings);
+      if (c.role === 'display') {
+        io.to(id).emit('settings', settings);
+      }
     }
   });
 
-  // Draw‑Events weiterleiten
-  socket.on('draw',     data => socket.broadcast.emit('draw', data));
-  socket.on('draw-end', data => socket.broadcast.emit('draw-end', data));
+  // Steuerungs‑Input weiterleiten
+  socket.on('draw', data => {
+    socket.broadcast.emit('draw', data);
+  });
+  socket.on('draw-end', data => {
+    socket.broadcast.emit('draw-end', data);
+  });
+
+  // Gyro‑Rohdaten an Admins weiterleiten
+  socket.on('gyro-data', ({ deviceId, alpha, beta, gamma }) => {
+    for (let [id, c] of Object.entries(clients)) {
+      if (c.role === 'admin') {
+        io.to(id).emit('gyro-data', { deviceId, alpha, beta, gamma });
+      }
+    }
+  });
 
   // Admin: Client kicken
   socket.on('kill-client', ({ socketId }) => {
@@ -79,7 +96,7 @@ io.on('connection', socket => {
     }
   });
 
-  // Disconnect
+  // Bei Trennung
   socket.on('disconnect', () => {
     delete clients[socket.id];
     sendClientList();
@@ -88,15 +105,4 @@ io.on('connection', socket => {
 
 // Server starten
 const PORT = process.env.PORT || 3000;
-  // Admin: Client kicken … (bestehender Code)
-
-  // → NEU: Gyro‑Daten an alle Admins weiterleiten
-  socket.on('gyro-data', ({ deviceId, alpha, beta, gamma }) => {
-    for (let [id, c] of Object.entries(clients)) {
-      if (c.role === 'admin') {
-        io.to(id).emit('gyro-data', { deviceId, alpha, beta, gamma });
-      }
-    }
-  });
-
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
