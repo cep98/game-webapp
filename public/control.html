@@ -26,7 +26,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.7 Control</div>
+  <div id="version">v1.8 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -37,31 +37,41 @@
     const laserBtn  = document.getElementById('laserBtn');
     let myColor     = null;
     let drawing     = false;
-    let zeroA = 0, zeroB = 0, lastAlpha = 0, lastBeta = 0;
+
+    // Buffer for the latest acceleration values
+    let accX = 0, accY = 0;
+    const MAX_ACC = 15;  // maximale erwartete Beschleunigung (m/s²)
 
     socket.on('connect', () => {
-      socket.emit('identify',      { role:'control', deviceId: socket.id });
+      socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    // Farbe vom Server bekommen, aber Button erst nach Permission zeigen
+    // Farbe zugewiesen bekommen
     socket.on('assign-color', color => {
       myColor = color;
       laserBtn.style.borderColor = myColor;
     });
 
-    // Gyro-Button: nach Permission Laser-Button anzeigen
+    // Erst nach Gyro-Permission zeigen wir den Laser
     gyroBtn.addEventListener('click', async () => {
-      if (DeviceOrientationEvent?.requestPermission) {
-        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
+      if (DeviceMotionEvent?.requestPermission) {
+        const perm = await DeviceMotionEvent.requestPermission().catch(console.warn);
         if (perm !== 'granted') {
-          return alert('Gyroskop‑Zugriff benötigt!');
+          return alert('Zugriff auf Bewegungssensor benötigt!');
         }
       }
-      // Wenn Farbe schon da ist, direkt wechseln
-      if (myColor) {
-        gyroBtn.style.display  = 'none';
-        laserBtn.style.display = 'block';
+      gyroBtn.style.display  = 'none';
+      laserBtn.style.display = 'block';
+    });
+
+    // DeviceMotion abfangen
+    window.addEventListener('devicemotion', ev => {
+      // Benutze inklusive Gravitation für stabileren Wert
+      const a = ev.accelerationIncludingGravity;
+      if (a) {
+        accX = a.x || 0;
+        accY = a.y || 0;
       }
     });
 
@@ -69,7 +79,6 @@
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
-      zeroA = lastAlpha; zeroB = lastBeta;
     }, { passive:false });
 
     // Laser stoppen
@@ -79,18 +88,28 @@
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha; lastBeta = ev.beta;
+    // Zeichnen: normierte Bewegung senden
+    function sendMotion() {
       if (!drawing) return;
-      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
-      let dB = lastBeta  - zeroB;
-      // Normierung (gleiche Logik wie vorher, adapte maxHor/maxVer falls nötig):
-      const maxHor = 20, maxVer = 20;
-      dA = Math.max(-maxHor, Math.min(maxHor, dA));
-      dB = Math.max(-maxVer, Math.min(maxVer, dB));
-      const x = 1 - ((dA + maxHor) / (2 * maxHor));
-      const y = 1 - ((dB + maxVer) / (2 * maxVer));
+      // Normierung auf [0..1]
+      let x = (accX + MAX_ACC) / (2 * MAX_ACC);
+      let y = (accY + MAX_ACC) / (2 * MAX_ACC);
+      // clamp
+      x = Math.max(0, Math.min(1, x));
+      y = Math.max(0, Math.min(1, y));
       socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
+    }
+
+    // Sende im Frame-Loop
+    function loop() {
+      sendMotion();
+      requestAnimationFrame(loop);
+    }
+    loop();
+
+    // Settings vom Server
+    socket.on('settings', data => {
+      // smoothing bleibt ungenutzt, da wir keine Glättung hier mehr brauchen
     });
   </script>
 </body>
