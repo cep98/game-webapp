@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen</title>
+  <title>Game Display mit Hindernissen (v1.12)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.11 Game</div>
+  <div id="version">v1.12 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -46,7 +46,7 @@
     ballBase.src   = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    // Init once mask+bg loaded
+    // Init once bg+mask loaded
     let loaded=0;
     [bgImage, maskImage].forEach(img=>{
       img.onload = ()=>{
@@ -58,7 +58,6 @@
           maskCanvas.height = maskImage.height;
           maskCtx = maskCanvas.getContext('2d');
           maskCtx.drawImage(maskImage,0,0);
-          // center ball
           ball.x = canvas.width/2;
           ball.y = canvas.height/2;
         }
@@ -86,7 +85,7 @@
 
     socket.on('draw', ({x,y,deviceId,color})=>{
       if (!canvas.width) return;
-      const now = performance.now();
+      const now  = performance.now();
       const rawX = x * canvas.width, rawY = y * canvas.height;
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
@@ -110,13 +109,9 @@
 
     function update(dt){
       if(!maskCtx) return;
-      const now = performance.now();
-      cleanup(now);
+      cleanup(performance.now());
 
-      // store previous ball pos
-      const prevBallX = ball.x, prevBallY = ball.y;
-
-      // Laser-point vs. Ball (v1.5)
+      // Laser-point vs. Ball (v1.5 logic)
       for(let id in pointers){
         const p = pointers[id];
         const dx = p.sx - p.px, dy = p.sy - p.py;
@@ -145,7 +140,7 @@
           const tx=-ny, ty=nx;
           ball.angularVelocity+=(rx*ty-ry*tx)*strength*0.005;
         }
-        p.pt=p.t;
+        p.pt = p.t;
       }
 
       // integrate ball
@@ -153,16 +148,27 @@
       ball.y += ball.vy*dt;
       ball.angle += ball.angularVelocity*dt;
 
-      // Mask-collision: if center inside white => revert and reflect
-      const cx = Math.round(ball.x), cy = Math.round(ball.y);
-      if(cx>=0&&cy>=0&&cx<maskCanvas.width&&cy<maskCanvas.height){
-        const d=maskCtx.getImageData(cx,cy,1,1).data;
-        if(d[0]>200&&d[1]>200&&d[2]>200){
-          // reflect velocity
-          ball.x = prevBallX;
-          ball.y = prevBallY;
-          ball.vx *= -BOUNCE;
-          ball.vy *= -BOUNCE;
+      // Mask bounce on ball edge
+      const cx = ball.x, cy = ball.y;
+      // sample 16 points around edge
+      for(let i=0;i<16;i++){
+        const ang = i*(Math.PI*2/16);
+        const ex = Math.round(cx + Math.cos(ang)*ball.r);
+        const ey = Math.round(cy + Math.sin(ang)*ball.r);
+        if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
+          const d = maskCtx.getImageData(ex,ey,1,1).data;
+          if(d[0]>200 && d[1]>200 && d[2]>200){
+            // normal = vector from center to edge-point
+            let nx = Math.cos(ang), ny = Math.sin(ang);
+            // reflect velocity: v' = v - 2*(v·n)*n
+            const vDotN = ball.vx*nx + ball.vy*ny;
+            ball.vx -= 2*vDotN*nx;
+            ball.vy -= 2*vDotN*ny;
+            // push ball outside
+            ball.x = ex - nx*(ball.r+1);
+            ball.y = ey - ny*(ball.r+1);
+            break;
+          }
         }
       }
 
@@ -184,9 +190,8 @@
         const bx=(canvas.width-bgImage.width)/2;
         const by=(canvas.height-bgImage.height)/2;
         ctx.drawImage(bgImage,bx,by);
-      } else {
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-      }
+      } else ctx.clearRect(0,0,canvas.width,canvas.height);
+
       // rotating ball
       if(ballBase.complete){
         ctx.save();
@@ -195,7 +200,7 @@
         ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
         ctx.restore();
       }
-      // shadow overlay
+      // shadow
       if(ballShadow.complete){
         ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
       }
