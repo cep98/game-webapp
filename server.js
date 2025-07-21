@@ -5,7 +5,7 @@ const app     = express();
 const http    = require('http').createServer(app);
 const io      = require('socket.io')(http);
 
-// Statische Auslieferung aus /public
+// Statische Auslieferung
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Defaults für Settings
@@ -15,17 +15,14 @@ let settings = {
   smoothing: 0.5
 };
 
-// Farbpalette für Controls
 const COLORS = [
-  '#e6194b', '#3cb44b', '#ffe119', '#4363d8',
-  '#f58231', '#911eb4', '#46f0f0', '#f032e6'
+  '#e6194b','#3cb44b','#ffe119','#4363d8',
+  '#f58231','#911eb4','#46f0f0','#f032e6'
 ];
 
-// Tracking aller Clients
-const clients    = {};  // socketId → { role, deviceId, color? }
+const clients = {};
 let controlCount = 0;
 
-// Hilfsfunktion: Client‑Liste an alle Admins senden
 function sendClientList() {
   const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
     socketId: id,
@@ -42,19 +39,16 @@ function sendClientList() {
 }
 
 io.on('connection', socket => {
-  // Identifikation
   socket.on('identify', ({ role, deviceId }) => {
     let color = null;
     if (role === 'control') {
-      color = COLORS[controlCount % COLORS.length];
-      controlCount++;
+      color = COLORS[controlCount++ % COLORS.length];
       socket.emit('assign-color', color);
     }
     clients[socket.id] = { role, deviceId, color };
     sendClientList();
   });
 
-  // Admin: Settings anfordern / updaten
   socket.on('request-settings', () => {
     socket.emit('settings', settings);
   });
@@ -67,24 +61,18 @@ io.on('connection', socket => {
     }
   });
 
-  // Steuerungs‑Input weiterleiten
-  socket.on('draw', data => {
-    socket.broadcast.emit('draw', data);
-  });
-  socket.on('draw-end', data => {
-    socket.broadcast.emit('draw-end', data);
-  });
+  socket.on('draw', data => socket.broadcast.emit('draw', data));
+  socket.on('draw-end', data => socket.broadcast.emit('draw-end', data));
 
-  // Gyro‑Rohdaten an Admins weiterleiten
-  socket.on('gyro-data', ({ deviceId, alpha, beta, gamma }) => {
+  // NEU: alle Sensordaten an Admins weiterleiten
+  socket.on('sensor-data', data => {
     for (let [id, c] of Object.entries(clients)) {
       if (c.role === 'admin') {
-        io.to(id).emit('gyro-data', { deviceId, alpha, beta, gamma });
+        io.to(id).emit('sensor-data', data);
       }
     }
   });
 
-  // Admin: Client kicken
   socket.on('kill-client', ({ socketId }) => {
     const me = clients[socket.id];
     if (!me || me.role !== 'admin') return;
@@ -96,13 +84,11 @@ io.on('connection', socket => {
     }
   });
 
-  // Bei Trennung
   socket.on('disconnect', () => {
     delete clients[socket.id];
     sendClientList();
   });
 });
 
-// Server starten
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
