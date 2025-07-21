@@ -124,8 +124,12 @@
         const p     = pointers[id];
         const dxSeg = p.sx - p.px, dySeg = p.sy - p.py;
         const segLen = Math.hypot(dxSeg, dySeg);
-        const pixelStep = Math.max(ball.r / 4, 1);
-        const steps = Math.max(Math.ceil(segLen / pixelStep), 1);
+        // --- refined intermediate steps: ---
+        // use half-pointer-radius as step, clamp steps between 5 and 500
+        const pixelStep = PTR_R * 0.5;
+        let steps = Math.ceil(segLen / pixelStep);
+        steps = Math.min(Math.max(steps, 5), 500);
+        // -------------------------------------
         let hit = false;
 
         for (let i = 0; i <= steps; i++) {
