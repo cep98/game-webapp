@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.13 Control</div>
+  <div id="version">v1.14 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -33,16 +33,17 @@
     const socket   = io();
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let myColor    = null, drawing = false;
+    let myColor    = null;
+    let drawing    = false;
 
     // Integrationszustand
     let velX = 0, velY = 0;
     let posX = 0, posY = 0;
-    const MAX_DISP = 0.2; // 20 cm maximal +/- in m
+    const MAX_DISP = 0.2; // 20 cm
 
     // Aktuelle lineare Beschleunigungen
     let lax = 0, // X-Achse (links/rechts)
-        laz = 0; // Z-Achse (oben/unten physisch)
+        laz = 0; // Z-Achse (hoch/runter)
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
@@ -63,7 +64,6 @@
       laserBtn.style.display = 'block';
     });
 
-    // Erfasse lineare Beschleunigung
     window.addEventListener('devicemotion', ev => {
       const a = ev.acceleration || {};
       lax = a.x || 0;
@@ -83,17 +83,16 @@
 
     let lastTs = performance.now();
     function loop(ts) {
-      const dt = (ts - lastTs) / 1000; // Sekunden
+      const dt = (ts - lastTs) / 1000;
       lastTs = ts;
 
-      // X-Integration: links/rechts
+      // integriere Beschleunigung
       velX += lax * dt;
-      // Y-Integration: oben/unten
       velY += laz * dt;
 
-      // leichte Dämpfung, damit es nicht ewig driftet
-      velX *= 0.98;
-      velY *= 0.98;
+      // stärkere Dämpfung gegen Drift
+      velX *= 0.8;
+      velY *= 0.8;
 
       posX += velX * dt;
       posY += velY * dt;
@@ -103,9 +102,9 @@
       posY = Math.max(-MAX_DISP, Math.min(MAX_DISP, posY));
 
       if (drawing) {
-        // invertiere X, damit Rechtsbewegung rechts im Canvas ist
-        const xNorm = 1 - ((posX + MAX_DISP) / (2 * MAX_DISP));
-        const yNorm = 1 - ((posY + MAX_DISP) / (2 * MAX_DISP));
+        // Normalisiere 0..1, X und Y direkt
+        const xNorm = (posX + MAX_DISP) / (2 * MAX_DISP);
+        const yNorm = (posY + MAX_DISP) / (2 * MAX_DISP);
         socket.emit('draw', { x: xNorm, y: yNorm, deviceId: socket.id, color: myColor });
       }
 
@@ -114,7 +113,7 @@
     requestAnimationFrame(loop);
 
     socket.on('settings', () => {
-      // keine Glättung mehr nötig
+      // keine Glättung nötig
     });
   </script>
 </body>
