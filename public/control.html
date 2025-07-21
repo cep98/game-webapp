@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Control</title>
   <style>
     html, body {
@@ -20,97 +20,91 @@
       transition:border-color .3s;
     }
     #laserBtn {
-      width:100px; height:100px; border-radius:50%;
-      background:red; display:none;
+      width:100px; height:100px; border-radius:50%; background:red;
+      display:none;
     }
   </style>
 </head>
 <body>
-  <div id="version">v1.8 Control</div>
+  <div id="version">v1.9 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket    = io();
-    const gyroBtn   = document.getElementById('gyroBtn');
-    const laserBtn  = document.getElementById('laserBtn');
-    let myColor     = null;
-    let drawing     = false;
+    const socket   = io();
+    const gyroBtn  = document.getElementById('gyroBtn');
+    const laserBtn = document.getElementById('laserBtn');
+    let myColor    = null;
+    let drawing    = false;
 
-    // Buffer for the latest acceleration values
-    let accX = 0, accY = 0;
-    const MAX_ACC = 15;  // maximale erwartete Beschleunigung (m/s²)
+    // Stores absolute tilt angles
+    let tiltX = 0, tiltY = 0;
+    // Maximum expected tilt angles for normalization
+    const MAX_GAMMA = 45; // left-right tilt limit
+    const MAX_BETA  = 45; // front-back tilt limit
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    // Farbe zugewiesen bekommen
     socket.on('assign-color', color => {
       myColor = color;
       laserBtn.style.borderColor = myColor;
     });
 
-    // Erst nach Gyro-Permission zeigen wir den Laser
+    // Request gyro permission, then show laser button
     gyroBtn.addEventListener('click', async () => {
-      if (DeviceMotionEvent?.requestPermission) {
-        const perm = await DeviceMotionEvent.requestPermission().catch(console.warn);
+      if (DeviceOrientationEvent?.requestPermission) {
+        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
         if (perm !== 'granted') {
-          return alert('Zugriff auf Bewegungssensor benötigt!');
+          return alert('Zugriff auf Bewegungsdaten benötigt!');
         }
       }
       gyroBtn.style.display  = 'none';
       laserBtn.style.display = 'block';
     });
 
-    // DeviceMotion abfangen
-    window.addEventListener('devicemotion', ev => {
-      // Benutze inklusive Gravitation für stabileren Wert
-      const a = ev.accelerationIncludingGravity;
-      if (a) {
-        accX = a.x || 0;
-        accY = a.y || 0;
-      }
+    // Listen for absolute orientation
+    window.addEventListener('deviceorientation', ev => {
+      // ev.gamma: left/right [-90,90], ev.beta: front/back [-180,180]
+      tiltX = ev.gamma || 0;
+      tiltY = ev.beta  || 0;
     });
 
-    // Laser starten
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
     }, { passive:false });
 
-    // Laser stoppen
     laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
       drawing = false;
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    // Zeichnen: normierte Bewegung senden
-    function sendMotion() {
+    function sendPosition() {
       if (!drawing) return;
-      // Normierung auf [0..1]
-      let x = (accX + MAX_ACC) / (2 * MAX_ACC);
-      let y = (accY + MAX_ACC) / (2 * MAX_ACC);
-      // clamp
-      x = Math.max(0, Math.min(1, x));
-      y = Math.max(0, Math.min(1, y));
+      // clamp within expected ranges
+      const xClamped = Math.max(-MAX_GAMMA, Math.min(MAX_GAMMA, tiltX));
+      const yClamped = Math.max(-MAX_BETA,  Math.min(MAX_BETA,  tiltY));
+
+      // normalize to [0..1]
+      const x = (xClamped + MAX_GAMMA) / (2 * MAX_GAMMA);
+      const y = 1 - ((yClamped + MAX_BETA) / (2 * MAX_BETA));
+
       socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
     }
 
-    // Sende im Frame-Loop
-    function loop() {
-      sendMotion();
+    // continuous loop
+    (function loop(){
+      sendPosition();
       requestAnimationFrame(loop);
-    }
-    loop();
+    })();
 
-    // Settings vom Server
-    socket.on('settings', data => {
-      // smoothing bleibt ungenutzt, da wir keine Glättung hier mehr brauchen
-    });
+    // no smoothing needed here
+    socket.on('settings', () => {});
   </script>
 </body>
 </html>
