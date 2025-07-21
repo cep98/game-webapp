@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.5 Game</div>
+  <div id="version">v1.6 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -31,9 +31,9 @@
       socket.emit('request-settings');
     });
 
-    // Canvas setup
-    const canvas = document.getElementById('gameCanvas');
-    const ctx    = canvas.getContext('2d');
+    // Canvas Setup
+    const canvas = document.getElementById('gameCanvas'),
+          ctx    = canvas.getContext('2d');
     function resize() {
       canvas.width  = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -41,59 +41,49 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // Versioned shadow‐overlay approach:
-    // 1) ballBase.png: your texture without any shadow
-    // 2) ballShadow.png: only the static shadow (transparent center)
+    // Images
     const ballBase   = new Image();
     const ballShadow = new Image();
     ballBase.src   = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    // Physics defaults
+    // Physics- & Pointer‑Settings
     let smoothing = 0.5;
-    const FRICTION         = 0.995;
-    const ANGULAR_FRICTION = 0.95;
-    const BOUNCE           = 0.8;
-    const BASE_STRENGTH    = 0.15;
-    const SPEED_SCALE      = 0.0002;
-    const PTR_TTL          = 500;
-    const PTR_R            = 16;
+    const FRICTION         = 0.995,
+          ANGULAR_FRICTION = 0.95,
+          BOUNCE           = 0.8,
+          BASE_STRENGTH    = 0.15,
+          SPEED_SCALE      = 0.0002,
+          PTR_TTL          = 500,
+          PTR_R            = 16;
 
-    // Ball state
-    const W = canvas.width, H = canvas.height;
+    // Ball‑State
     let ball = {
-      x: W/2, y: H/2,
-      vx: 0, vy: 0,
+      x: canvas.width/2,
+      y: canvas.height/2,
+      vx: 0, vy:0,
       r: 20,
-      angle: 0,
-      angularVelocity: 0
+      angle: 0, angularVelocity: 0
     };
 
-    // Pointers & colors
-    const pointers     = {}; // deviceId -> { sx, sy, px, py, t, pt }
-    const deviceColors = {}; // deviceId -> color
-    const COLORS       = [
-      '#e6194b','#3cb44b','#ffe119','#4363d8',
-      '#f58231','#911eb4','#46f0f0','#f032e6'
-    ];
+    // Pointers & Farben
+    const pointers     = {};
+    const deviceColors = {};
+    const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIndex = 0;
 
-    // Receive draw & draw-end from controls
+    // Draw-Events
     socket.on('draw', ({ x, y, deviceId, color }) => {
       const now  = performance.now();
-      const rawX = x * canvas.width;
-      const rawY = y * canvas.height;
-
-      // assign or update color
+      const rawX = x * canvas.width, rawY = y * canvas.height;
+      // Farbe zuweisen
       if (color) {
         deviceColors[deviceId] = color;
       } else if (!deviceColors[deviceId]) {
         deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
       }
-
       const prev = pointers[deviceId];
       if (prev) {
-        // smoothing
         const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
         const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
         pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
@@ -101,12 +91,11 @@
         pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
       }
     });
-
     socket.on('draw-end', ({ deviceId }) => {
       delete pointers[deviceId];
     });
 
-    // cleanup stale pointers
+    // Alte Pointers entfernen
     function cleanup(now) {
       for (let id in pointers) {
         if (now - pointers[id].t > PTR_TTL) {
@@ -115,7 +104,7 @@
       }
     }
 
-    // Physics update
+    // Physics-Update mit feinerer Unterteilung
     function update(dt) {
       const now = performance.now();
       cleanup(now);
@@ -124,27 +113,30 @@
         const p     = pointers[id];
         const dxSeg = p.sx - p.px, dySeg = p.sy - p.py;
         const segLen = Math.hypot(dxSeg, dySeg);
-        const pixelStep = Math.max(ball.r / 4, 1);
-        const steps = Math.max(Math.ceil(segLen / pixelStep), 1);
-        let hit = false;
+        // Feineres pixelStep
+        const pixelStep = PTR_R / 2;
+        let steps = Math.ceil(segLen / pixelStep);
+        // Beschränkung auf max. 100 Schritte, min. 10
+        steps = Math.min(Math.max(steps, 10), 100);
 
+        let hit = false;
         for (let i = 0; i <= steps; i++) {
           const t  = i / steps;
           const ix = p.px + dxSeg * t, iy = p.py + dySeg * t;
-          if ((ball.x - ix) ** 2 + (ball.y - iy) ** 2 <= (ball.r + PTR_R) ** 2) {
+          if ((ball.x - ix)**2 + (ball.y - iy)**2 <= (ball.r + PTR_R)**2) {
             hit = true;
             break;
           }
         }
 
         if (hit) {
-          // apply impulse
+          // Impuls berechnen
           const midx = p.px + dxSeg * 0.5, midy = p.py + dySeg * 0.5;
-          let dx    = ball.x - midx, dy = ball.y - midy;
+          let dx = ball.x - midx, dy = ball.y - midy;
           const len = Math.hypot(dx, dy) || 1;
           dx /= len; dy /= len;
 
-          const deltaT = Math.max(p.t - p.pt, 1);
+          const deltaT   = Math.max(p.t - p.pt, 1);
           const speedPxS = segLen * 1000 / deltaT;
           const strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
 
@@ -159,66 +151,49 @@
         p.pt = p.t;
       }
 
-      // integrate motion
+      // Bewegung integrieren
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
 
-      // bounce walls
+      // Wände
       if (ball.x - ball.r < 0) {
-        ball.x = ball.r;
-        ball.vx *= -BOUNCE;
-        ball.angularVelocity *= -1;
+        ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1;
       }
       if (ball.x + ball.r > canvas.width) {
-        ball.x = canvas.width - ball.r;
-        ball.vx *= -BOUNCE;
-        ball.angularVelocity *= -1;
+        ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1;
       }
       if (ball.y - ball.r < 0) {
-        ball.y = ball.r;
-        ball.vy *= -BOUNCE;
-        ball.angularVelocity *= -1;
+        ball.y = ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1;
       }
       if (ball.y + ball.r > canvas.height) {
-        ball.y = canvas.height - ball.r;
-        ball.vy *= -BOUNCE;
-        ball.angularVelocity *= -1;
+        ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1;
       }
 
-      // friction
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
       ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
-    // Draw everything
+    // Zeichnen
     function draw() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 1) draw rotating base
+      // 1) Basis rotieren
       if (ballBase.complete) {
         ctx.save();
         ctx.translate(ball.x, ball.y);
         ctx.rotate(ball.angle);
-        ctx.drawImage(
-          ballBase,
-          -ball.r, -ball.r,
-          ball.r * 2, ball.r * 2
-        );
+        ctx.drawImage(ballBase, -ball.r, -ball.r, ball.r*2, ball.r*2);
         ctx.restore();
       }
 
-      // 2) draw static shadow overlay
+      // 2) Schatten‑Overlay
       if (ballShadow.complete) {
-        ctx.drawImage(
-          ballShadow,
-          ball.x - ball.r, ball.y - ball.r,
-          ball.r * 2, ball.r * 2
-        );
+        ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
       }
 
-      // 3) draw pointers on top
+      // 3) Pointers
       for (let id in pointers) {
         const p = pointers[id];
         ctx.fillStyle = deviceColors[id];
@@ -228,7 +203,7 @@
       }
     }
 
-    // Main loop
+    // Main‑Loop
     let last = performance.now();
     (function loop(now) {
       const dt = (now - last) / 16.67;
@@ -238,7 +213,7 @@
       requestAnimationFrame(loop);
     })(last);
 
-    // update smoothing from admin
+    // Settings‑Update
     socket.on('settings', data => {
       smoothing = data.smoothing;
     });
