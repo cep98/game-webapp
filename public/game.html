@@ -14,7 +14,8 @@
       color: #fff; opacity: 0.6; font-size: 0.9em;
     }
     canvas {
-      display: block; width: 100%; height: 100%; background: #000;
+      display: block; width: 100%; height: 100%;
+      background: #000;
     }
   </style>
 </head>
@@ -30,9 +31,9 @@
       socket.emit('request-settings');
     });
 
-    // Canvas-Setup
-    const canvas = document.getElementById('gameCanvas'),
-          ctx    = canvas.getContext('2d');
+    // Canvas setup
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
     function resize() {
       canvas.width  = window.innerWidth;
       canvas.height = window.innerHeight;
@@ -40,71 +41,72 @@
     window.addEventListener('resize', resize);
     resize();
 
-    // Ball‑Bilder
+    // Versioned shadow‐overlay approach:
+    // 1) ballBase.png: your texture without any shadow
+    // 2) ballShadow.png: only the static shadow (transparent center)
     const ballBase   = new Image();
     const ballShadow = new Image();
     ballBase.src   = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    // Physik‑Konstanten
+    // Physics defaults
     let smoothing = 0.5;
-    const FRICTION      = 0.995;
-    const ANG_FRICTION  = 0.95;
-    const BOUNCE        = 0.8;
-    const BASE_STRENGTH = 0.15;
-    const SPEED_SCALE   = 0.0002;
-    const PTR_TTL       = 500;
-    const PTR_R         = 16;
+    const FRICTION         = 0.995;
+    const ANGULAR_FRICTION = 0.95;
+    const BOUNCE           = 0.8;
+    const BASE_STRENGTH    = 0.15;
+    const SPEED_SCALE      = 0.0002;
+    const PTR_TTL          = 500;
+    const PTR_R            = 16;
 
-    // Ball‑State
+    // Ball state
+    const W = canvas.width, H = canvas.height;
     let ball = {
-      x: canvas.width/2,
-      y: canvas.height/2,
+      x: W/2, y: H/2,
       vx: 0, vy: 0,
       r: 20,
       angle: 0,
       angularVelocity: 0
     };
 
-    // Pointer‑Tracking & Farben
-    const pointers     = {};    // deviceId → { px,py,sx,sy,t,pt }
-    const deviceColors = {};    // deviceId → Farbcode
-    const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
+    // Pointers & colors
+    const pointers     = {}; // deviceId -> { sx, sy, px, py, t, pt }
+    const deviceColors = {}; // deviceId -> color
+    const COLORS       = [
+      '#e6194b','#3cb44b','#ffe119','#4363d8',
+      '#f58231','#911eb4','#46f0f0','#f032e6'
+    ];
     let colorIndex = 0;
 
-    // Helfer: nähester Punkt auf Segment P→S zum Kreiszentrum C
-    function closestPoint(px,py, sx,sy, cx,cy) {
-      const vx = sx - px, vy = sy - py;
-      const len2 = vx*vx + vy*vy;
-      if (len2 === 0) return { x:px, y:py, t:0 };
-      let t = ((cx - px)*vx + (cy - py)*vy) / len2;
-      t = Math.max(0, Math.min(1, t));
-      return { x: px + vx*t, y: py + vy*t, t };
-    }
-
-    // Eingehende Draw‑Daten
+    // Receive draw & draw-end from controls
     socket.on('draw', ({ x, y, deviceId, color }) => {
       const now  = performance.now();
-      const rawX = x * canvas.width, rawY = y * canvas.height;
+      const rawX = x * canvas.width;
+      const rawY = y * canvas.height;
+
+      // assign or update color
       if (color) {
         deviceColors[deviceId] = color;
       } else if (!deviceColors[deviceId]) {
         deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
       }
+
       const prev = pointers[deviceId];
       if (prev) {
+        // smoothing
         const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
         const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
-        pointers[deviceId] = { px: prev.sx, py: prev.sy, sx, sy, t: now, pt: prev.pt };
+        pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
       } else {
-        pointers[deviceId] = { px: rawX, py: rawY, sx: rawX, sy: rawY, t: now, pt: now };
+        pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
       }
     });
+
     socket.on('draw-end', ({ deviceId }) => {
       delete pointers[deviceId];
     });
 
-    // Alte Pointers säubern
+    // cleanup stale pointers
     function cleanup(now) {
       for (let id in pointers) {
         if (now - pointers[id].t > PTR_TTL) {
@@ -113,105 +115,130 @@
       }
     }
 
-    // Physik-Update
+    // Physics update
     function update(dt) {
       const now = performance.now();
       cleanup(now);
 
       for (let id in pointers) {
-        const p = pointers[id];
-        // nächster Punkt
-        const cp = closestPoint(p.px,p.py, p.sx,p.sy, ball.x, ball.y);
-        const dx = cp.x - ball.x, dy = cp.y - ball.y;
-        const dist2 = dx*dx + dy*dy;
-        const rad = ball.r + PTR_R;
-        if (dist2 <= rad*rad) {
-          // Impulsrichtung
-          let nx = ball.x - cp.x, ny = ball.y - cp.y;
-          const d = Math.hypot(nx, ny) || 1;
-          nx /= d; ny /= d;
-          // Stärke basierend auf Geschwindigkeit des Pointers
-          const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
-          const deltaT = Math.max(p.t - p.pt, 1);
-          const speed = segLen * 1000 / deltaT;
-          const strength = BASE_STRENGTH + speed * SPEED_SCALE;
-          // Impuls anwenden
-          ball.vx += nx * strength;
-          ball.vy += ny * strength;
-          // Drehimpuls
-          const midx = (p.px + p.sx) / 2, midy = (p.py + p.sy) / 2;
-          const rx = midx - ball.x, ry = midy - ball.y;
-          const tx = -ny, ty = nx;
-          ball.angularVelocity += (rx*ty - ry*tx) * strength * 0.005;
-          // Zeitstempel aktualisieren
-          p.pt = p.t;
+        const p     = pointers[id];
+        const dxSeg = p.sx - p.px, dySeg = p.sy - p.py;
+        const segLen = Math.hypot(dxSeg, dySeg);
+        const pixelStep = Math.max(ball.r / 4, 1);
+        const steps = Math.max(Math.ceil(segLen / pixelStep), 1);
+        let hit = false;
+
+        for (let i = 0; i <= steps; i++) {
+          const t  = i / steps;
+          const ix = p.px + dxSeg * t, iy = p.py + dySeg * t;
+          if ((ball.x - ix) ** 2 + (ball.y - iy) ** 2 <= (ball.r + PTR_R) ** 2) {
+            hit = true;
+            break;
+          }
         }
-        // für nächsten Frame aktualisieren
-        p.px = p.sx;
-        p.py = p.sy;
+
+        if (hit) {
+          // apply impulse
+          const midx = p.px + dxSeg * 0.5, midy = p.py + dySeg * 0.5;
+          let dx    = ball.x - midx, dy = ball.y - midy;
+          const len = Math.hypot(dx, dy) || 1;
+          dx /= len; dy /= len;
+
+          const deltaT = Math.max(p.t - p.pt, 1);
+          const speedPxS = segLen * 1000 / deltaT;
+          const strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
+
+          ball.vx += dx * strength;
+          ball.vy += dy * strength;
+
+          const rx = midx - ball.x, ry = midy - ball.y;
+          const tx = -dy, ty = dx;
+          ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+        }
+
+        p.pt = p.t;
       }
 
-      // Ball bewegen
+      // integrate motion
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
 
-      // Wände
+      // bounce walls
       if (ball.x - ball.r < 0) {
-        ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1;
+        ball.x = ball.r;
+        ball.vx *= -BOUNCE;
+        ball.angularVelocity *= -1;
       }
       if (ball.x + ball.r > canvas.width) {
-        ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1;
+        ball.x = canvas.width - ball.r;
+        ball.vx *= -BOUNCE;
+        ball.angularVelocity *= -1;
       }
       if (ball.y - ball.r < 0) {
-        ball.y = ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1;
+        ball.y = ball.r;
+        ball.vy *= -BOUNCE;
+        ball.angularVelocity *= -1;
       }
       if (ball.y + ball.r > canvas.height) {
-        ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1;
+        ball.y = canvas.height - ball.r;
+        ball.vy *= -BOUNCE;
+        ball.angularVelocity *= -1;
       }
 
+      // friction
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
-      ball.angularVelocity *= ANG_FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
-    // Zeichnen
+    // Draw everything
     function draw() {
-      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 1) rotierende Basis
+      // 1) draw rotating base
       if (ballBase.complete) {
         ctx.save();
         ctx.translate(ball.x, ball.y);
         ctx.rotate(ball.angle);
-        ctx.drawImage(ballBase, -ball.r, -ball.r, ball.r*2, ball.r*2);
+        ctx.drawImage(
+          ballBase,
+          -ball.r, -ball.r,
+          ball.r * 2, ball.r * 2
+        );
         ctx.restore();
       }
-      // 2) statisches Schatten‑Overlay
+
+      // 2) draw static shadow overlay
       if (ballShadow.complete) {
-        ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
+        ctx.drawImage(
+          ballShadow,
+          ball.x - ball.r, ball.y - ball.r,
+          ball.r * 2, ball.r * 2
+        );
       }
-      // 3) Pointers
+
+      // 3) draw pointers on top
       for (let id in pointers) {
         const p = pointers[id];
         ctx.fillStyle = deviceColors[id];
         ctx.beginPath();
-        ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI);
+        ctx.arc(p.sx, p.sy, PTR_R, 0, 2 * Math.PI);
         ctx.fill();
       }
     }
 
-    // Haupt‑Loop
+    // Main loop
     let last = performance.now();
     (function loop(now) {
-      const dt = (now - last)/16.67;
+      const dt = (now - last) / 16.67;
       last = now;
       update(dt);
       draw();
       requestAnimationFrame(loop);
     })(last);
 
-    // Settings vom Admin
+    // update smoothing from admin
     socket.on('settings', data => {
       smoothing = data.smoothing;
     });
