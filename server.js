@@ -88,4 +88,15 @@ io.on('connection', socket => {
 
 // Server starten
 const PORT = process.env.PORT || 3000;
+  // Admin: Client kicken … (bestehender Code)
+
+  // → NEU: Gyro‑Daten an alle Admins weiterleiten
+  socket.on('gyro-data', ({ deviceId, alpha, beta, gamma }) => {
+    for (let [id, c] of Object.entries(clients)) {
+      if (c.role === 'admin') {
+        io.to(id).emit('gyro-data', { deviceId, alpha, beta, gamma });
+      }
+    }
+  });
+
 http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
