@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.14 Control</div>
+  <div id="version">v1.15 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -33,17 +33,16 @@
     const socket   = io();
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let myColor    = null;
-    let drawing    = false;
+    let myColor    = null, drawing = false;
 
     // Integrationszustand
     let velX = 0, velY = 0;
     let posX = 0, posY = 0;
     const MAX_DISP = 0.2; // 20 cm
 
-    // Aktuelle lineare Beschleunigungen
+    // Aktuelle lineare Beschleunigungen (ohne Gravitation)
     let lax = 0, // X-Achse (links/rechts)
-        laz = 0; // Z-Achse (hoch/runter)
+        lay = 0; // Y-Achse (oben/unten)
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
@@ -62,17 +61,23 @@
       }
       gyroBtn.style.display  = 'none';
       laserBtn.style.display = 'block';
+      // Reset bei Beginn, um Drift zu vermeiden
+      velX = velY = posX = posY = 0;
     });
 
     window.addEventListener('devicemotion', ev => {
-      const a = ev.acceleration || {};
-      lax = a.x || 0;
-      laz = a.z || 0;
+      if (ev.acceleration) {
+        lax = ev.acceleration.x || 0;
+        lay = ev.acceleration.y || 0;
+      }
     });
 
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
+      // Bei erneutem Zeichnen Integration zurücksetzen
+      velX = velY = posX = posY = 0;
+      lastTs = performance.now();
     }, { passive:false });
 
     laserBtn.addEventListener('touchend', e => {
@@ -83,28 +88,31 @@
 
     let lastTs = performance.now();
     function loop(ts) {
-      const dt = (ts - lastTs) / 1000;
+      const dt = (ts - lastTs) / 1000; // in Sekunden
       lastTs = ts;
 
-      // integriere Beschleunigung
-      velX += lax * dt;
-      velY += laz * dt;
+      // Δs = v·dt + ½·a·dt²
+      const dx = velX * dt + 0.5 * lax * dt * dt;
+      const dy = velY * dt + 0.5 * lay * dt * dt;
 
-      // stärkere Dämpfung gegen Drift
+      velX += lax * dt;
+      velY += lay * dt;
+
+      // leichte Dämpfung gegen Drift
       velX *= 0.8;
       velY *= 0.8;
 
-      posX += velX * dt;
-      posY += velY * dt;
+      posX += dx;
+      posY += dy;
 
-      // Begrenzung auf +/- MAX_DISP
+      // Begrenzung auf ±MAX_DISP
       posX = Math.max(-MAX_DISP, Math.min(MAX_DISP, posX));
       posY = Math.max(-MAX_DISP, Math.min(MAX_DISP, posY));
 
       if (drawing) {
-        // Normalisiere 0..1, X und Y direkt
+        // Normalisieren auf [0..1]
         const xNorm = (posX + MAX_DISP) / (2 * MAX_DISP);
-        const yNorm = (posY + MAX_DISP) / (2 * MAX_DISP);
+        const yNorm = 1 - ((posY + MAX_DISP) / (2 * MAX_DISP)); 
         socket.emit('draw', { x: xNorm, y: yNorm, deviceId: socket.id, color: myColor });
       }
 
