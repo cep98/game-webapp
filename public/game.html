@@ -1,26 +1,27 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Game Display</title>
   <style>
     html, body {
-      margin:0; padding:0; width:100%; height:100%;
-      background:#000; overflow:hidden;
+      margin: 0; padding: 0; width: 100%; height: 100%;
+      background: #000; overflow: hidden;
     }
     #version {
-      position:absolute; top:10px; left:10px;
-      color:#fff; opacity:0.6; font-size:0.9em;
+      position: absolute; top: 10px; left: 10px;
+      color: #fff; opacity: 0.6; font-size: 0.9em;
     }
     canvas {
-      display:block; width:100%; height:100%; background:#000;
+      display: block; width: 100%; height: 100%; background: #000;
     }
   </style>
 </head>
 <body>
-  <div id="version">v1.8 Game</div>
+  <div id="version">v1.5 Game</div>
   <canvas id="gameCanvas"></canvas>
+
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
@@ -29,61 +30,72 @@
       socket.emit('request-settings');
     });
 
-    // Canvas Setup
+    // Canvas-Setup
     const canvas = document.getElementById('gameCanvas'),
           ctx    = canvas.getContext('2d');
-    function resize(){
+    function resize() {
       canvas.width  = window.innerWidth;
       canvas.height = window.innerHeight;
     }
     window.addEventListener('resize', resize);
     resize();
 
-    // Images (Basis + Schatten)
-    const ballBase   = new Image(),
-          ballShadow = new Image();
+    // Ball‑Bilder
+    const ballBase   = new Image();
+    const ballShadow = new Image();
     ballBase.src   = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    // Physik & Pointer‑Settings
+    // Physik‑Konstanten
     let smoothing = 0.5;
-    const FRICTION         = 0.995,
-          ANGULAR_FRICTION = 0.95,
-          BOUNCE           = 0.8,
-          BASE_STRENGTH    = 0.15,
-          SPEED_SCALE      = 0.0002,
-          PTR_TTL          = 500,
-          PTR_R            = 16;
+    const FRICTION      = 0.995;
+    const ANG_FRICTION  = 0.95;
+    const BOUNCE        = 0.8;
+    const BASE_STRENGTH = 0.15;
+    const SPEED_SCALE   = 0.0002;
+    const PTR_TTL       = 500;
+    const PTR_R         = 16;
 
-    // Ballzustand
+    // Ball‑State
     let ball = {
       x: canvas.width/2,
       y: canvas.height/2,
-      vx:0, vy:0,
-      r:20,
-      angle: 0, angularVelocity: 0
+      vx: 0, vy: 0,
+      r: 20,
+      angle: 0,
+      angularVelocity: 0
     };
 
-    // Pointer‑Tracking
-    const pointers     = {};     // deviceId -> { sx, sy, px, py, t, pt }
-    const deviceColors = {};     // deviceId -> Farbe
+    // Pointer‑Tracking & Farben
+    const pointers     = {};    // deviceId → { px,py,sx,sy,t,pt }
+    const deviceColors = {};    // deviceId → Farbcode
     const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIndex = 0;
 
-    // Draw‑Events
+    // Helfer: nähester Punkt auf Segment P→S zum Kreiszentrum C
+    function closestPoint(px,py, sx,sy, cx,cy) {
+      const vx = sx - px, vy = sy - py;
+      const len2 = vx*vx + vy*vy;
+      if (len2 === 0) return { x:px, y:py, t:0 };
+      let t = ((cx - px)*vx + (cy - py)*vy) / len2;
+      t = Math.max(0, Math.min(1, t));
+      return { x: px + vx*t, y: py + vy*t, t };
+    }
+
+    // Eingehende Draw‑Daten
     socket.on('draw', ({ x, y, deviceId, color }) => {
       const now  = performance.now();
       const rawX = x * canvas.width, rawY = y * canvas.height;
-      // Farbe zuweisen
-      if (color) deviceColors[deviceId] = color;
-      else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
-
+      if (color) {
+        deviceColors[deviceId] = color;
+      } else if (!deviceColors[deviceId]) {
+        deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
+      }
       const prev = pointers[deviceId];
       if (prev) {
-        // Glätten nur für Anzeige, Physik nutzt prev.px/py -> prev.sx/prev.sy
         const sx = prev.sx + (rawX - prev.sx) * (1 - smoothing);
         const sy = prev.sy + (rawY - prev.sy) * (1 - smoothing);
-        pointers[deviceId] = { px: prev.sx, py: prev.sy, sx, sy, t: now, pt: prev.t };
+        pointers[deviceId] = { px: prev.sx, py: prev.sy, sx, sy, t: now, pt: prev.pt };
       } else {
         pointers[deviceId] = { px: rawX, py: rawY, sx: rawX, sy: rawY, t: now, pt: now };
       }
@@ -92,7 +104,7 @@
       delete pointers[deviceId];
     });
 
-    // Alte Pointers entfernen
+    // Alte Pointers säubern
     function cleanup(now) {
       for (let id in pointers) {
         if (now - pointers[id].t > PTR_TTL) {
@@ -101,62 +113,50 @@
       }
     }
 
-    // Aktualisierung mit pixelgenauer Schrittprüfung
+    // Physik-Update
     function update(dt) {
       const now = performance.now();
       cleanup(now);
 
       for (let id in pointers) {
         const p = pointers[id];
-        const dx = p.sx - p.px, dy = p.sy - p.py;
-        const segLen = Math.hypot(dx, dy);
-        // pixelStep = 1px, maxSteps begrenzt
-        const pixelStep = 1;
-        let steps = Math.ceil(segLen / pixelStep);
-        steps = Math.min(Math.max(steps, 10), 2000);
-
-        let hit = false;
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          const ix = p.px + dx * t, iy = p.py + dy * t;
-          if ((ball.x - ix) ** 2 + (ball.y - iy) ** 2 <= (ball.r + PTR_R) ** 2) {
-            hit = true;
-            break;
-          }
-        }
-
-        if (hit) {
-          // Impuls genau am Mittel des Segments
-          const midx = p.px + dx * 0.5, midy = p.py + dy * 0.5;
-          let vx = dx, vy = dy;
-          const len = Math.hypot(vx, vy) || 1;
-          vx /= len; vy /= len;
-
+        // nächster Punkt
+        const cp = closestPoint(p.px,p.py, p.sx,p.sy, ball.x, ball.y);
+        const dx = cp.x - ball.x, dy = cp.y - ball.y;
+        const dist2 = dx*dx + dy*dy;
+        const rad = ball.r + PTR_R;
+        if (dist2 <= rad*rad) {
+          // Impulsrichtung
+          let nx = ball.x - cp.x, ny = ball.y - cp.y;
+          const d = Math.hypot(nx, ny) || 1;
+          nx /= d; ny /= d;
+          // Stärke basierend auf Geschwindigkeit des Pointers
+          const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
           const deltaT = Math.max(p.t - p.pt, 1);
-          const speedPxS = segLen * 1000 / deltaT;
-          const strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
-
-          ball.vx += vx * strength;
-          ball.vy += vy * strength;
-
+          const speed = segLen * 1000 / deltaT;
+          const strength = BASE_STRENGTH + speed * SPEED_SCALE;
+          // Impuls anwenden
+          ball.vx += nx * strength;
+          ball.vy += ny * strength;
           // Drehimpuls
+          const midx = (p.px + p.sx) / 2, midy = (p.py + p.sy) / 2;
           const rx = midx - ball.x, ry = midy - ball.y;
-          const tx = -vy, ty = vx;
-          ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+          const tx = -ny, ty = nx;
+          ball.angularVelocity += (rx*ty - ry*tx) * strength * 0.005;
+          // Zeitstempel aktualisieren
+          p.pt = p.t;
         }
-
-        // Für nächste Frame setzen
+        // für nächsten Frame aktualisieren
         p.px = p.sx;
         p.py = p.sy;
-        p.pt = p.t;
       }
 
-      // Ballbewegung integrieren
+      // Ball bewegen
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
 
-      // Wand-Kollisionen
+      // Wände
       if (ball.x - ball.r < 0) {
         ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1;
       }
@@ -170,15 +170,14 @@
         ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1;
       }
 
-      // Reibung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
+      ball.angularVelocity *= ANG_FRICTION;
     }
 
     // Zeichnen
     function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(0,0,canvas.width,canvas.height);
 
       // 1) rotierende Basis
       if (ballBase.complete) {
@@ -202,9 +201,9 @@
       }
     }
 
-    // Main‑Loop
+    // Haupt‑Loop
     let last = performance.now();
-    (function loop(now){
+    (function loop(now) {
       const dt = (now - last)/16.67;
       last = now;
       update(dt);
@@ -212,7 +211,7 @@
       requestAnimationFrame(loop);
     })(last);
 
-    // Admin-Settings erhalten
+    // Settings vom Admin
     socket.on('settings', data => {
       smoothing = data.smoothing;
     });
