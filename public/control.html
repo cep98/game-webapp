@@ -24,23 +24,25 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.12 Control</div>
+  <div id="version">v1.13 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
-    const gyroBtn = document.getElementById('gyroBtn');
+    const socket   = io();
+    const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let myColor = null, drawing = false;
+    let myColor    = null, drawing = false;
 
-    // state for integration
-    let velX = 0, velY = 0, posX = 0, posY = 0;
-    const MAX_DISP = 0.2; // 20cm
+    // Integrationszustand
+    let velX = 0, velY = 0;
+    let posX = 0, posY = 0;
+    const MAX_DISP = 0.2; // 20 cm maximal +/- in m
 
-    // latest linear acceleration (m/s²)
-    let lax = 0, lay = 0;
+    // Aktuelle lineare Beschleunigungen
+    let lax = 0, // X-Achse (links/rechts)
+        laz = 0; // Z-Achse (oben/unten physisch)
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
@@ -57,16 +59,15 @@
         const perm = await DeviceMotionEvent.requestPermission().catch(console.warn);
         if (perm !== 'granted') return alert('Bewegungsdaten benötigt!');
       }
-      gyroBtn.style.display = 'none';
+      gyroBtn.style.display  = 'none';
       laserBtn.style.display = 'block';
     });
 
-    // capture linear acceleration
+    // Erfasse lineare Beschleunigung
     window.addEventListener('devicemotion', ev => {
-      if (ev.acceleration) {
-        lax = ev.acceleration.x || 0;
-        lay = ev.acceleration.y || 0;
-      }
+      const a = ev.acceleration || {};
+      lax = a.x || 0;
+      laz = a.z || 0;
     });
 
     laserBtn.addEventListener('touchstart', e => {
@@ -82,27 +83,30 @@
 
     let lastTs = performance.now();
     function loop(ts) {
-      const dt = (ts - lastTs) / 1000; // in seconds
+      const dt = (ts - lastTs) / 1000; // Sekunden
       lastTs = ts;
 
-      // integrate acceleration to velocity
+      // X-Integration: links/rechts
       velX += lax * dt;
-      velY += lay * dt;
-      // simple damping to limit drift
-      velX *= 0.9;
-      velY *= 0.9;
-      // integrate velocity to position
+      // Y-Integration: oben/unten
+      velY += laz * dt;
+
+      // leichte Dämpfung, damit es nicht ewig driftet
+      velX *= 0.98;
+      velY *= 0.98;
+
       posX += velX * dt;
       posY += velY * dt;
-      // clamp displacement
+
+      // Begrenzung auf +/- MAX_DISP
       posX = Math.max(-MAX_DISP, Math.min(MAX_DISP, posX));
       posY = Math.max(-MAX_DISP, Math.min(MAX_DISP, posY));
 
       if (drawing) {
-        // normalize to [0..1]
-        const x = (posX + MAX_DISP) / (2 * MAX_DISP);
-        const y = 1 - ((posY + MAX_DISP) / (2 * MAX_DISP));
-        socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
+        // invertiere X, damit Rechtsbewegung rechts im Canvas ist
+        const xNorm = 1 - ((posX + MAX_DISP) / (2 * MAX_DISP));
+        const yNorm = 1 - ((posY + MAX_DISP) / (2 * MAX_DISP));
+        socket.emit('draw', { x: xNorm, y: yNorm, deviceId: socket.id, color: myColor });
       }
 
       requestAnimationFrame(loop);
