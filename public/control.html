@@ -24,32 +24,25 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.11 Control</div>
+  <div id="version">v1.12 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket   = io();
-    const gyroBtn  = document.getElementById('gyroBtn');
+    const socket = io();
+    const gyroBtn = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    let myColor    = null, drawing = false;
+    let myColor = null, drawing = false;
 
-    // aktuelle Sensordaten
-    const sensorState = {
-      deviceId: null,
-      // orientation
-      alpha: 0, beta: 0, gamma: 0,
-      // acceleration
-      ax: 0, ay: 0, az: 0,
-      // acceleration without gravity
-      lax: 0, lay: 0, laz: 0,
-      // rotation rates
-      rr_alpha: 0, rr_beta: 0, rr_gamma: 0
-    };
+    // state for integration
+    let velX = 0, velY = 0, posX = 0, posY = 0;
+    const MAX_DISP = 0.2; // 20cm
+
+    // latest linear acceleration (m/s²)
+    let lax = 0, lay = 0;
 
     socket.on('connect', () => {
-      sensorState.deviceId = socket.id;
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
@@ -60,37 +53,20 @@
     });
 
     gyroBtn.addEventListener('click', async () => {
-      if (DeviceOrientationEvent?.requestPermission) {
-        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
-        if (perm !== 'granted') return alert('Gyro‑Zugriff benötigt!');
+      if (DeviceMotionEvent?.requestPermission) {
+        const perm = await DeviceMotionEvent.requestPermission().catch(console.warn);
+        if (perm !== 'granted') return alert('Bewegungsdaten benötigt!');
       }
-      gyroBtn.style.display  = 'none';
+      gyroBtn.style.display = 'none';
       laserBtn.style.display = 'block';
     });
 
-    // orientation
-    window.addEventListener('deviceorientation', ev => {
-      sensorState.alpha = ev.alpha || 0;
-      sensorState.beta  = ev.beta  || 0;
-      sensorState.gamma = ev.gamma || 0;
-      socket.emit('sensor-data', sensorState);
-    });
-
-    // motion
+    // capture linear acceleration
     window.addEventListener('devicemotion', ev => {
-      const ag = ev.accelerationIncludingGravity || {};
-      const a  = ev.acceleration || {};
-      const rr = ev.rotationRate || {};
-      sensorState.ax        = ag.x || 0;
-      sensorState.ay        = ag.y || 0;
-      sensorState.az        = ag.z || 0;
-      sensorState.lax       = a.x  || 0;
-      sensorState.lay       = a.y  || 0;
-      sensorState.laz       = a.z  || 0;
-      sensorState.rr_alpha  = rr.alpha || 0;
-      sensorState.rr_beta   = rr.beta  || 0;
-      sensorState.rr_gamma  = rr.gamma || 0;
-      socket.emit('sensor-data', sensorState);
+      if (ev.acceleration) {
+        lax = ev.acceleration.x || 0;
+        lay = ev.acceleration.y || 0;
+      }
     });
 
     laserBtn.addEventListener('touchstart', e => {
@@ -104,20 +80,38 @@
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    function sendPosition() {
-      if (!drawing) return;
-      // Normalisierung Tilt
-      const x = ((sensorState.gamma || 0) + 90)  / 180;
-      const y = 1 - (((sensorState.beta || 0) + 180) / 360);
-      socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
-    }
+    let lastTs = performance.now();
+    function loop(ts) {
+      const dt = (ts - lastTs) / 1000; // in seconds
+      lastTs = ts;
 
-    ;(function loop(){
-      sendPosition();
+      // integrate acceleration to velocity
+      velX += lax * dt;
+      velY += lay * dt;
+      // simple damping to limit drift
+      velX *= 0.9;
+      velY *= 0.9;
+      // integrate velocity to position
+      posX += velX * dt;
+      posY += velY * dt;
+      // clamp displacement
+      posX = Math.max(-MAX_DISP, Math.min(MAX_DISP, posX));
+      posY = Math.max(-MAX_DISP, Math.min(MAX_DISP, posY));
+
+      if (drawing) {
+        // normalize to [0..1]
+        const x = (posX + MAX_DISP) / (2 * MAX_DISP);
+        const y = 1 - ((posY + MAX_DISP) / (2 * MAX_DISP));
+        socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
+      }
+
       requestAnimationFrame(loop);
-    })();
+    }
+    requestAnimationFrame(loop);
 
-    socket.on('settings', () => {});
+    socket.on('settings', () => {
+      // keine Glättung mehr nötig
+    });
   </script>
 </body>
 </html>
