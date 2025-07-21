@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Admin-Panel</title>
   <style>
     body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
@@ -10,25 +10,22 @@
     header { display:flex; align-items:center; justify-content:space-between; background:#222; }
     #version { font-size:0.9em; opacity:0.7; }
     #settings { display:flex; gap:1em; align-items:center; }
-    #clients, #gyrolog { list-style:none; padding:0; margin:1em; }
-    #clients li, #gyrolog li {
-      padding:0.5em; border-bottom:1px solid #333;
-      display:flex; justify-content:space-between;
-    }
-    .dot { width:12px; height:12px; border-radius:50%; margin-right:0.5em; background:#666; flex-shrink:0; }
+    #clients, #sensolog { list-style:none; padding:0; margin:1em; }
+    #clients li, #sensolog li { padding:0.5em; border-bottom:1px solid #333; display:flex; justify-content:space-between; }
+    .dot { width:12px; height:12px; border-radius:50%; margin-right:0.5em; flex-shrink:0; background:#666; }
     .left { display:flex; align-items:center; }
     .client-info { font-size:0.95em; }
-    .gyro-values { font-family:monospace; font-size:0.85em; color:#afa; }
+    .sensor-values { font-family:monospace; font-size:0.85em; color:#afa; white-space: pre; }
   </style>
 </head>
 <body>
   <header>
     <h1>Admin-Panel</h1>
-    <div id="version">v1.7 Admin</div>
+    <div id="version">v1.8 Admin</div>
     <div id="settings">
-      <label>Max. Winkel H:<input id="maxHor" type="number" value="20" /></label>
-      <label>Max. Winkel V:<input id="maxVer" type="number" value="20" /></label>
-      <label>Glättung:<input id="smoothing" type="range" value="50" /><span id="smoothingVal">50%</span></label>
+      <label>Max. Winkel H:<input id="maxHor" type="number" value="20"/></label>
+      <label>Max. Winkel V:<input id="maxVer" type="number" value="20"/></label>
+      <label>Glättung:<input id="smoothing" type="range" value="50"/><span id="smoothingVal">50%</span></label>
     </div>
   </header>
 
@@ -38,8 +35,8 @@
   </section>
 
   <section>
-    <h2>Gyro‑Log (α, β, γ)</h2>
-    <ul id="gyrolog"></ul>
+    <h2>Sensordaten</h2>
+    <ul id="sensolog"></ul>
   </section>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -51,27 +48,25 @@
     const maxVer    = document.getElementById('maxVer');
     const smoothing = document.getElementById('smoothing');
     const smoothingVal = document.getElementById('smoothingVal');
-
     function sendSettings() {
       socket.emit('update-settings', {
         maxHor: parseFloat(maxHor.value),
         maxVer: parseFloat(maxVer.value),
-        smoothing: parseFloat(smoothing.value) / 100
+        smoothing: parseFloat(smoothing.value)/100
       });
     }
     maxHor.addEventListener('change', sendSettings);
     maxVer.addEventListener('change', sendSettings);
     smoothing.addEventListener('input', () => {
-      smoothingVal.textContent = smoothing.value + '%';
+      smoothingVal.textContent = smoothing.value+'%';
       sendSettings();
     });
 
-    // Identify as admin
     socket.on('connect', () => {
       socket.emit('identify', { role:'admin', deviceId: null });
     });
 
-    // Render client list
+    // Client‑Liste
     const clientsEl = document.getElementById('clients');
     socket.on('client-list', list => {
       clientsEl.innerHTML = '';
@@ -79,8 +74,7 @@
         const li = document.createElement('li');
         const left = document.createElement('div');
         left.classList.add('left');
-        const dot = document.createElement('span');
-        dot.classList.add('dot');
+        const dot = document.createElement('span'); dot.classList.add('dot');
         if (c.color) dot.style.backgroundColor = c.color;
         left.appendChild(dot);
         const info = document.createElement('span');
@@ -92,27 +86,22 @@
       });
     });
 
-    // Gyro‑Log
-    const gyroEl   = document.getElementById('gyrolog');
-    const gyroStore = {};
-
-    socket.on('gyro-data', ({ deviceId, alpha, beta, gamma }) => {
-      if (!gyroStore[deviceId]) gyroStore[deviceId] = [];
-      const arr = gyroStore[deviceId];
-      arr.push({ alpha, beta, gamma, ts: Date.now() });
-      if (arr.length > 10) arr.shift();
-
-      gyroEl.innerHTML = '';
-      Object.entries(gyroStore).forEach(([id, entries]) => {
-        entries.forEach(e => {
-          const li = document.createElement('li');
-          li.innerHTML = `
-            <span class="client-info">${id}</span>
-            <span class="gyro-values">
-              α=${e.alpha.toFixed(1)}°, β=${e.beta.toFixed(1)}°, γ=${e.gamma.toFixed(1)}°
-            </span>`;
-          gyroEl.appendChild(li);
-        });
+    // Sensor‑Log: nur 1 Eintrag pro Client, aktuellste Werte
+    const sensorStore = {};
+    const sensologEl = document.getElementById('sensolog');
+    socket.on('sensor-data', data => {
+      sensorStore[data.deviceId] = data;
+      sensologEl.innerHTML = '';
+      Object.entries(sensorStore).forEach(([id, d]) => {
+        const li = document.createElement('li');
+        li.classList.add('sensor-values');
+        li.innerHTML = 
+          `ID=${id}\n`+
+          `α=${d.alpha.toFixed(1)}°, β=${d.beta.toFixed(1)}°, γ=${d.gamma.toFixed(1)}°\n`+
+          `accG=(${d.ax.toFixed(2)},${d.ay.toFixed(2)},${d.az.toFixed(2)})\n`+
+          `acc= ( ${d.lax.toFixed(2)}, ${d.lay.toFixed(2)}, ${d.laz.toFixed(2)})\n`+
+          `rotR=(${d.rr_alpha.toFixed(1)},${d.rr_beta.toFixed(1)},${d.rr_gamma.toFixed(1)})`;
+        sensologEl.appendChild(li);
       });
     });
   </script>
