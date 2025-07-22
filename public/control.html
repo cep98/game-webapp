@@ -24,7 +24,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.16 Control</div>
+  <div id="version">v1.17 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -36,13 +36,13 @@
     let myColor    = null;
     let drawing    = false;
 
-    // Position (m) innerhalb ±MAX_DISP
+    // Integrationszustand
+    let velX = 0, velY = 0;
     let posX = 0, posY = 0;
-    const MAX_DISP = 0.2; // 20 cm
+    const MAX_DISP = 0.2; // 20 cm in Meter
 
-    // Aktuelle lineare Beschleunigungen (m/s²)
-    let lax = 0, // links/rechts
-        lay = 0; // oben/unten
+    // aktuelle lineare Beschleunigung
+    let lax = 0, lay = 0;
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
@@ -57,17 +57,12 @@
     gyroBtn.addEventListener('click', async () => {
       if (DeviceMotionEvent?.requestPermission) {
         const perm = await DeviceMotionEvent.requestPermission().catch(console.warn);
-        if (perm !== 'granted') {
-          return alert('Bewegungsdaten benötigt!');
-        }
+        if (perm !== 'granted') return alert('Bewegungsdaten benötigt!');
       }
       gyroBtn.style.display  = 'none';
       laserBtn.style.display = 'block';
-      // Reset starten
-      posX = posY = 0;
     });
 
-    // Erfasse lineare Beschleunigung ohne Gravitation
     window.addEventListener('devicemotion', ev => {
       const a = ev.acceleration || {};
       lax = a.x || 0;
@@ -90,22 +85,26 @@
       const dt = (ts - lastTs) / 1000; // Sekunden
       lastTs = ts;
 
+      // Geschwindigkeit integrieren
+      velX += lax * dt;
+      velY += lay * dt;
+
+      // Position integrieren
+      posX += velX * dt;
+      posY += velY * dt;
+
+      // optionale leichte Dämpfung zur Stabilisierung (kleiner Wert)
+      velX *= 0.99;
+      velY *= 0.99;
+
+      // Begrenzung auf ±MAX_DISP
+      posX = Math.max(-MAX_DISP, Math.min(MAX_DISP, posX));
+      posY = Math.max(-MAX_DISP, Math.min(MAX_DISP, posY));
+
       if (drawing) {
-        // Δs = ½·a·(Δt)²
-        const dx = 0.5 * lax * dt * dt;
-        const dy = 0.5 * lay * dt * dt;
-
-        posX += dx;
-        posY += dy;
-
-        // Begrenzung auf ±MAX_DISP
-        posX = Math.max(-MAX_DISP, Math.min(MAX_DISP, posX));
-        posY = Math.max(-MAX_DISP, Math.min(MAX_DISP, posY));
-
-        // auf [0..1] normalisieren
+        // Normalisieren auf [0…1]
         const xNorm = (posX + MAX_DISP) / (2 * MAX_DISP);
         const yNorm = (posY + MAX_DISP) / (2 * MAX_DISP);
-
         socket.emit('draw', {
           x: xNorm,
           y: yNorm,
@@ -119,7 +118,7 @@
     requestAnimationFrame(loop);
 
     socket.on('settings', () => {
-      // keine Glättung nötig
+      // keine Glättung mehr notwendig
     });
   </script>
 </body>
