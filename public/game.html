@@ -113,14 +113,13 @@
 
     // Improved collision: segment stepping + rim sampling
     function update(dt) {
-      const now = performance.now();
-      cleanup(now);
+      cleanup(performance.now());
 
-      // Segment stepping pointer-ball
+      // Pointer vs Ball: segment stepping
       for (let id in pointers) {
         const p = pointers[id];
-        const dx = p.sx - p.px;
-        const dy = p.sy - p.py;
+        const dx = p.sx - p.px,
+              dy = p.sy - p.py;
         const segLen = Math.hypot(dx, dy);
         const step = Math.max(1, PTR_R);
         const steps = Math.ceil(segLen / step);
@@ -129,11 +128,11 @@
           const ix = p.px + dx * t;
           const iy = p.py + dy * t;
           if ((ball.x - ix) ** 2 + (ball.y - iy) ** 2 <= (ball.r + PTR_R) ** 2) {
+            // collision normal at contact
             let nx = ball.x - ix;
             let ny = ball.y - iy;
             const nlen = Math.hypot(nx, ny) || 1;
-            nx /= nlen;
-            ny /= nlen;
+            nx /= nlen; ny /= nlen;
             const deltaT = Math.max(p.t - p.pt, 1);
             const speed  = segLen * 1000 / deltaT;
             const strength = BASE_STRENGTH + speed * SPEED_SCALE;
@@ -141,11 +140,56 @@
             ball.vy += ny * strength;
             const rx = ix - ball.x;
             const ry = iy - ball.y;
-            const tx = -ny;
-            const ty = nx;
+            const tx = -ny, ty = nx;
             ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
             break;
           }
+        }
+        p.pt = p.t;
+      }
+
+      // integrate motion
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+      ball.angle += ball.angularVelocity * dt;
+
+      // Mask collision: sample perimeter in mask space
+      const scaleX = maskCanvas.width  / canvas.width;
+      const scaleY = maskCanvas.height / canvas.height;
+      const N = 32;
+      for (let i = 0; i < N; i++) {
+        const ang = (i / N) * 2 * Math.PI;
+        const cx = ball.x + Math.cos(ang) * ball.r;
+        const cy = ball.y + Math.sin(ang) * ball.r;
+        const mx = Math.round(cx * scaleX);
+        const my = Math.round(cy * scaleY);
+        if (mx >= 0 && my >= 0 && mx < maskCanvas.width && my < maskCanvas.height) {
+          const d = maskCtx.getImageData(mx, my, 1, 1).data;
+          if (d[0] > 200 && d[1] > 200 && d[2] > 200) {
+            // reflect using normal
+            const nx = Math.cos(ang);
+            const ny = Math.sin(ang);
+            const vdot = ball.vx * nx + ball.vy * ny;
+            ball.vx -= 2 * vdot * nx;
+            ball.vy -= 2 * vdot * ny;
+            // push out along normal in canvas coords
+            ball.x = (mx / scaleX) - nx * (ball.r + 1);
+            ball.y = (my / scaleY) - ny * (ball.r + 1);
+            break;
+          }
+        }
+      }
+
+      // wall bounce
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.x + ball.r > canvas.width) { ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y + ball.r > canvas.height) { ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
+
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
+    }
         }
         p.pt = p.t;
       }
