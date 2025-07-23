@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.8 Game</div>
+  <div id="version">v1.10 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -31,7 +31,6 @@
       socket.emit('request-settings');
     });
 
-    // Canvas setup
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
     function resize() {
@@ -40,6 +39,12 @@
     }
     window.addEventListener('resize', resize);
     resize();
+
+    // Background & mask images
+    const bgImage   = new Image();
+    const maskImage = new Image();
+    bgImage.src     = '/background.png';
+    maskImage.src   = '/mask.png';
 
     // Ball images
     const ballBase   = new Image();
@@ -74,25 +79,17 @@
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
       const prev = pointers[deviceId];
       if (prev) {
-        const dx = sx - prev.sx;
-        const dy = sy - prev.sy;
         pointers[deviceId] = { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
       } else {
         pointers[deviceId] = { sx, sy, px: sx, py: sy, t: now, pt: now };
       }
     });
-
-    socket.on('draw-end', ({ deviceId }) => {
-      delete pointers[deviceId];
-    });
+    socket.on('draw-end', ({ deviceId }) => { delete pointers[deviceId]; });
 
     function cleanup(now) {
-      for (let id in pointers) {
-        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
-      }
+      for (let id in pointers) if (now - pointers[id].t > PTR_TTL) delete pointers[id];
     }
 
-    // Analytic segment-circle intersection
     function segmentCircleIntersection(px,py, sx,sy, cx,cy, r) {
       const dx = sx - px, dy = sy - py;
       const fx = px - cx, fy = py - cy;
@@ -103,118 +100,85 @@
       if (disc < 0) return null;
       const sq = Math.sqrt(disc);
       const t1 = (-b - sq)/(2*a);
-      const t2 = (-b + sq)/(2*a);
       if (t1 >= 0 && t1 <= 1) return t1;
+      const t2 = (-b + sq)/(2*a);
       if (t2 >= 0 && t2 <= 1) return t2;
       return null;
     }
 
-    // Physics update
     function update(dt) {
-      const now = performance.now();
-      cleanup(now);
+      const now = performance.now(); cleanup(now);
 
-      // Pointer-ball collision
       for (let id in pointers) {
         const p = pointers[id];
         const { px, py, sx, sy, t, pt } = p;
         const hitT = segmentCircleIntersection(px, py, sx, sy, ball.x, ball.y, ball.r + PTR_R);
         if (hitT !== null) {
-          // compute collision point
-          const ix = px + (sx-px)*hitT;
-          const iy = py + (sy-py)*hitT;
-          // normal
+          const ix = px + (sx - px)*hitT;
+          const iy = py + (sy - py)*hitT;
           let nx = ball.x - ix, ny = ball.y - iy;
-          const len = Math.hypot(nx, ny) || 1;
-          nx /= len; ny /= len;
-          // strength
-          const segLen = Math.hypot(sx-px, sy-py);
+          const nLen = Math.hypot(nx, ny) || 1;
+          nx /= nLen; ny /= nLen;
+          const segLen = Math.hypot(sx - px, sy - py);
           const deltaT = Math.max(t - pt, 1);
           const speedPxS = segLen * 1000 / deltaT;
           const strength = BASE_STRENGTH + speedPxS * SPEED_SCALE;
-          // apply impulse
           ball.vx += nx * strength;
           ball.vy += ny * strength;
-          // angular
-          const midx = px + (sx-px)*0.5, midy = py + (sy-py)*0.5;
+          const midx = ix, midy = iy;
           const rx = midx - ball.x, ry = midy - ball.y;
           const tx = -ny, ty = nx;
           ball.angularVelocity += (rx*ty - ry*tx) * strength * 0.005;
-
           p.pt = p.t;
         }
       }
 
-      // integrate ball
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
 
-      // bounce walls
-      if (ball.x - ball.r < 0) {
-        ball.x = ball.r;
-        ball.vx *= -BOUNCE;
-        ball.angularVelocity *= -1;
-      }
-      if (ball.x + ball.r > canvas.width) {
-        ball.x = canvas.width - ball.r;
-        ball.vx *= -BOUNCE;
-        ball.angularVelocity *= -1;
-      }
-      if (ball.y - ball.r < 0) {
-        ball.y = ball.r;
-        ball.vy *= -BOUNCE;
-        ball.angularVelocity *= -1;
-      }
-      if (ball.y + ball.r > canvas.height) {
-        ball.y = canvas.height - ball.r;
-        ball.vy *= -BOUNCE;
-        ball.angularVelocity *= -1;
-      }
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.x + ball.r > canvas.width) { ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
+      if (ball.y + ball.r > canvas.height) { ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
 
-      ball.vx *= FRICTION;
-      ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
+      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
-    // Draw all
     function draw() {
-      ctx.clearRect(0,0,canvas.width,canvas.height);
-      // rotating base
+      // background centered
+      if (bgImage.complete) {
+        const bx = (canvas.width - bgImage.width) / 2;
+        const by = (canvas.height - bgImage.height) / 2;
+        ctx.drawImage(bgImage, bx, by);
+      } else {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+      }
+      // ball base
       if (ballBase.complete) {
-        ctx.save();
-        ctx.translate(ball.x, ball.y);
-        ctx.rotate(ball.angle);
+        ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.angle);
         ctx.drawImage(ballBase, -ball.r, -ball.r, ball.r*2, ball.r*2);
         ctx.restore();
       }
       // shadow
       if (ballShadow.complete) {
-        ctx.drawImage(ballShadow, ball.x-ball.r, ball.y-ball.r, ball.r*2, ball.r*2);
+        ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
       }
       // pointers
       for (let id in pointers) {
         const p = pointers[id];
         ctx.fillStyle = deviceColors[id];
-        ctx.beginPath();
-        ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI); ctx.fill();
       }
     }
 
-    // main loop
     let last = performance.now();
     (function loop(now) {
-      const dt = (now - last) / 16.67;
-      last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
+      const dt = (now - last) / 16.67; last = now;
+      update(dt); draw(); requestAnimationFrame(loop);
     })(last);
 
-    socket.on('settings', data => {
-      smoothing = data.smoothing;
-    });
+    socket.on('settings', data => { smoothing = data.smoothing; });
   </script>
 </body>
 </html>
