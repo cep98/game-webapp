@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.13)</title>
+  <title>Game Display mit Hindernissen (v1.14)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,95 +19,77 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.13 Game</div>
+  <div id="version">v1.14 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify',{ role:'display', deviceId: socket.id });
+      socket.emit('identify', { role:'display', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
     // Canvas + Maske
-    const canvas = document.getElementById('gameCanvas'),
-          ctx    = canvas.getContext('2d');
+    const canvas = document.getElementById('gameCanvas'), ctx = canvas.getContext('2d');
     let maskCanvas, maskCtx;
 
     // Assets
-    const bgImage    = new Image(),
-          maskImage  = new Image(),
-          ballBase   = new Image(),
-          ballShadow = new Image();
-
-    bgImage.src    = '/background.png';
-    maskImage.src  = '/mask.png';
-    ballBase.src   = '/ball-base.png';
+    const bgImage = new Image(), maskImage = new Image(), ballBase = new Image(), ballShadow = new Image();
+    bgImage.src = '/background.png';
+    maskImage.src = '/mask.png';
+    ballBase.src = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    // Init once bg+mask loaded
+    // Init mask
     let loaded = 0;
-    [bgImage, maskImage].forEach(img => {
-      img.onload = () => {
-        if (++loaded === 2) {
-          canvas.width  = maskImage.width;
-          canvas.height = maskImage.height;
-          maskCanvas    = document.createElement('canvas');
-          maskCanvas.width  = maskImage.width;
-          maskCanvas.height = maskImage.height;
-          maskCtx = maskCanvas.getContext('2d');
-          maskCtx.drawImage(maskImage, 0, 0);
-          ball.x = canvas.width/2;
-          ball.y = canvas.height/2;
-        }
-      };
+    [bgImage, maskImage].forEach(img => img.onload = () => {
+      if (++loaded === 2) {
+        canvas.width  = maskImage.width;
+        canvas.height = maskImage.height;
+        maskCanvas = document.createElement('canvas');
+        maskCanvas.width  = maskImage.width;
+        maskCanvas.height = maskImage.height;
+        maskCtx = maskCanvas.getContext('2d');
+        maskCtx.drawImage(maskImage, 0, 0);
+        ball.x = canvas.width/2; ball.y = canvas.height/2;
+      }
     });
 
-    // Physics params
+    // Physics
     let smoothing = 0.5;
-    const FRICTION         = 0.995,
+    const FRICTION = 0.995,
           ANGULAR_FRICTION = 0.95,
-          BOUNCE           = 0.8,
-          BASE_STRENGTH    = 0.15,
-          SPEED_SCALE      = 0.0002,
-          PTR_TTL          = 500,
-          PTR_R            = 16;
-
-    // Ball state
+          BOUNCE = 0.8,
+          BASE_STRENGTH = 0.15,
+          SPEED_SCALE = 0.0002,
+          PTR_TTL = 500,
+          PTR_R = 16;
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    // Pointers & colors
-    const pointers     = {},
-          deviceColors = {},
-          COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
+    // Pointers
+    const pointers = {}, deviceColors = {};
+    const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIndex = 0;
 
     socket.on('draw', ({x,y,deviceId,color}) => {
-      if (!canvas.width) return;
+      if (!maskCtx) return;
       const now = performance.now();
-      const rawX = x * canvas.width,
-            rawY = y * canvas.height;
+      const sx = x * canvas.width, sy = y * canvas.height;
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
       const prev = pointers[deviceId];
-      if (prev) {
-        // no smoothing for collision accuracy
-        pointers[deviceId] = { sx: rawX, sy: rawY, px: prev.sx, py: prev.sy, t: now, pt: prev.pt };
-      } else {
-        pointers[deviceId] = { sx: rawX, sy: rawY, px: rawX, py: rawY, t: now, pt: now };
-      }
+      pointers[deviceId] = prev ? { sx, sy, px: prev.sx, py: prev.sy, t: now, pt: prev.pt }
+                                 : { sx, sy, px: sx, py: sy, t: now, pt: now };
     });
     socket.on('draw-end', ({deviceId}) => delete pointers[deviceId]);
     socket.on('settings', data => smoothing = data.smoothing);
 
     function cleanup(now) {
-      for (let id in pointers) {
-        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
-      }
+      for (let id in pointers) if (now - pointers[id].t > PTR_TTL) delete pointers[id];
     }
 
-    // Simple CCD for pointer vs ball
+    // Segment/Circle CCD
     function intersect(px,py, sx,sy, cx,cy, r) {
       const dx = sx - px, dy = sy - py;
       const fx = px - cx, fy = py - cy;
@@ -116,107 +98,97 @@
       const c = fx*fx + fy*fy - r*r;
       const disc = b*b - 4*a*c;
       if (disc < 0) return null;
-      const sqrtD = Math.sqrt(disc);
-      const t1 = (-b - sqrtD) / (2*a);
+      const sq = Math.sqrt(disc);
+      const t1 = (-b - sq) / (2*a);
       if (t1 >= 0 && t1 <= 1) return t1;
-      const t2 = (-b + sqrtD) / (2*a);
+      const t2 = (-b + sq) / (2*a);
       if (t2 >= 0 && t2 <= 1) return t2;
       return null;
     }
 
     function update(dt) {
-      if (!maskCtx) return;
       cleanup(performance.now());
-
-      // Store previous ball pos
-      const prevX = ball.x, prevY = ball.y;
 
       // Pointer vs Ball
       for (let id in pointers) {
         const p = pointers[id];
-        const tHit = intersect(p.px, p.py, p.sx, p.sy, ball.x, ball.y, ball.r + PTR_R);
-        if (tHit != null) {
-          // Contact point
-          const ix = p.px + (p.sx - p.px) * tHit;
-          const iy = p.py + (p.sy - p.py) * tHit;
+        const t = intersect(p.px, p.py, p.sx, p.sy, ball.x, ball.y, ball.r + PTR_R);
+        if (t != null) {
+          const ix = p.px + (p.sx - p.px) * t;
+          const iy = p.py + (p.sy - p.py) * t;
           // Normal
           let nx = ball.x - ix, ny = ball.y - iy;
-          const nLen = Math.hypot(nx, ny) || 1; nx /= nLen; ny /= nLen;
-          // Impulse
-          const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
-          const deltaT = Math.max(p.t - p.pt, 1);
-          const speed = segLen * 1000 / deltaT;
-          const strength = BASE_STRENGTH + speed * SPEED_SCALE;
-          ball.vx += nx * strength;
-          ball.vy += ny * strength;
-          // Torque
+          const nl = Math.hypot(nx, ny) || 1; nx /= nl; ny /= nl;
+          const seg = Math.hypot(p.sx - p.px, p.sy - p.py);
+          const dtp = Math.max(p.t - p.pt, 1);
+          const speed = seg * 1000 / dtp;
+          const str = BASE_STRENGTH + speed * SPEED_SCALE;
+          ball.vx += nx * str;
+          ball.vy += ny * str;
           const rx = ix - ball.x, ry = iy - ball.y;
           const tx = -ny, ty = nx;
-          ball.angularVelocity += (rx*ty - ry*tx) * strength * 0.005;
+          ball.angularVelocity += (rx*ty - ry*tx) * str * 0.005;
           p.pt = p.t;
         }
       }
 
-      // Integrate
+      // Integrate ball
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
       ball.angle += ball.angularVelocity * dt;
 
-      // Mask Center Check: revert if penetration
-      if (maskCtx) {
-        const cx = Math.round(ball.x), cy = Math.round(ball.y);
-        if (cx >= 0 && cy >= 0 && cx < maskCanvas.width && cy < maskCanvas.height) {
-          const d = maskCtx.getImageData(cx, cy, 1, 1).data;
+      // Mask perimeter collision
+      const cx = ball.x, cy = ball.y;
+      const samples = 16;
+      for (let i = 0; i < samples; i++) {
+        const ang = (i / samples) * 2 * Math.PI;
+        const ex = Math.round(cx + Math.cos(ang) * ball.r);
+        const ey = Math.round(cy + Math.sin(ang) * ball.r);
+        if (ex >= 0 && ey >= 0 && ex < maskCanvas.width && ey < maskCanvas.height) {
+          const d = maskCtx.getImageData(ex, ey, 1, 1).data;
           if (d[0] > 200 && d[1] > 200 && d[2] > 200) {
-            // revert
-            ball.x = prevX; ball.y = prevY;
-            // invert velocity
-            ball.vx *= -BOUNCE;
-            ball.vy *= -BOUNCE;
+            // reflect using normal = (cos, sin)
+            let nx = Math.cos(ang), ny = Math.sin(ang);
+            const vDotN = ball.vx * nx + ball.vy * ny;
+            ball.vx -= 2 * vDotN * nx;
+            ball.vy -= 2 * vDotN * ny;
+            // push out
+            ball.x = ex - nx * (ball.r + 1);
+            ball.y = ey - ny * (ball.r + 1);
+            break;
           }
         }
       }
 
-      // Canvas-border bounce
+      // Canvas borders
       if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
       if (ball.x + ball.r > canvas.width) { ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; ball.angularVelocity *= -1; }
       if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
       if (ball.y + ball.r > canvas.height) { ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; ball.angularVelocity *= -1; }
 
-      // Friction
-      ball.vx *= FRICTION;
-      ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
+      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
     function draw() {
       ctx.clearRect(0,0,canvas.width,canvas.height);
-      // Background
       if (bgImage.complete) ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
-      // Ball
       if (ballBase.complete) {
         ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.angle);
         ctx.drawImage(ballBase, -ball.r, -ball.r, ball.r*2, ball.r*2);
         ctx.restore();
       }
-      // Shadow
       if (ballShadow.complete) ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
-      // Pointers
       for (let id in pointers) {
         const p = pointers[id];
         ctx.fillStyle = deviceColors[id];
-        ctx.beginPath();
-        ctx.arc(p.sx, p.sy, PTR_R, 0, 2 * Math.PI);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(p.sx, p.sy, PTR_R, 0, 2*Math.PI); ctx.fill();
       }
     }
 
     let last = performance.now();
     (function loop(now) {
       const dt = (now - last) / 16.67; last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
+      update(dt); draw(); requestAnimationFrame(loop);
     })(last);
   </script>
 </body>
