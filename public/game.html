@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.16)</title>
+  <title>Game Display mit Hindernissen (v1.17)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.16 Game</div>
+  <div id="version">v1.17 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -149,7 +149,7 @@
       ball.y += ball.vy*dt;
       ball.angle += ball.angularVelocity*dt;
 
-      // Robuste Maskenkollision
+      // Korrekte Maskenkollision: Ball darf nur auf heller Fläche bleiben
       let correctionX = 0, correctionY = 0, hitCount = 0;
       for(let i=0;i<16;i++){
         const ang = i*(Math.PI*2/16);
@@ -157,7 +157,8 @@
         const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
           const d = maskCtx.getImageData(ex,ey,1,1).data;
-          if(d[0]>200 && d[1]>200 && d[2]>200){
+          // Weiß = Spielfläche → also Kollision, wenn der Punkt NICHT weiß
+          if(d[0]<200 || d[1]<200 || d[2]<200){
             const nx = Math.cos(ang);
             const ny = Math.sin(ang);
             correctionX += nx;
