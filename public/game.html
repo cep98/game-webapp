@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.14)</title>
+  <title>Game Display mit Hindernissen (v1.15)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.14 Game</div>
+  <div id="version">v1.15 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -68,7 +68,8 @@
           BASE_STRENGTH    = 0.15,
           SPEED_SCALE      = 0.0002,
           PTR_TTL          = 500,
-          PTR_R            = 16;
+          PTR_R            = 16,
+          PTR_COOLDOWN     = 30; // in ms
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
@@ -103,7 +104,8 @@
 
     function update(dt){
       if(!maskCtx) return;
-      cleanup(performance.now());
+      const now = performance.now();
+      cleanup(now);
 
       for(let id in pointers){
         const p = pointers[id];
@@ -111,6 +113,8 @@
         const segLen = Math.hypot(dx,dy);
         const steps = Math.ceil(segLen / 8);
         const hitRadius = ball.r * 1.1 + PTR_R;
+
+        if (p.t - p.pt < PTR_COOLDOWN) continue;
 
         for (let i = 0; i <= steps; i++) {
           const t = i / steps;
@@ -204,12 +208,6 @@
         ctx.arc(p.sx,p.sy,PTR_R,0,2*Math.PI);
         ctx.fill();
       }
-
-      // Debugkreis (optional)
-      // ctx.strokeStyle = 'white';
-      // ctx.beginPath();
-      // ctx.arc(ball.x, ball.y, ball.r + PTR_R, 0, 2*Math.PI);
-      // ctx.stroke();
     }
 
     let last=performance.now();
