@@ -1,31 +1,44 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Admin-Panel</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Admin</title>
   <style>
     body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
     header, section { padding:1em; }
     header { display:flex; align-items:center; justify-content:space-between; background:#222; }
     #version { font-size:0.9em; opacity:0.7; }
     #settings { display:flex; gap:1em; align-items:center; }
-    #clients, #sensolog { list-style:none; padding:0; margin:1em; }
-    #clients li, #sensolog li { padding:0.5em; border-bottom:1px solid #333; display:flex; justify-content:space-between; }
-    .dot { width:12px; height:12px; border-radius:50%; margin-right:0.5em; flex-shrink:0; background:#666; }
-    .left { display:flex; align-items:center; }
+    label { font-size:0.9em; }
+    input[type=number], input[type=range] { width:4em; }
+    #clients { list-style:none; padding:0; margin:1em; }
+    #clients li {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0.5em 0; border-bottom:1px solid #333;
+    }
+    .left {
+      display:flex; align-items:center;
+    }
+    .dot {
+      width:12px; height:12px; border-radius:50%;
+      display:inline-block; margin-right:0.75em; background:#666;
+    }
     .client-info { font-size:0.95em; }
-    .sensor-values { font-family:monospace; font-size:0.85em; color:#afa; white-space: pre; }
+    .kill-btn {
+      background:transparent; border:none; color:#f55;
+      font-size:1.2em; cursor:pointer;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>Admin-Panel</h1>
-    <div id="version">v1.8 Admin</div>
+    <div id="version">v1.6 Admin</div>
     <div id="settings">
-      <label>Max. Winkel H:<input id="maxHor" type="number" value="20"/></label>
-      <label>Max. Winkel V:<input id="maxVer" type="number" value="20"/></label>
-      <label>Glättung:<input id="smoothing" type="range" value="50"/><span id="smoothingVal">50%</span></label>
+      <label>Max. Winkel H:<input id="maxHor" type="number" min="0" max="180" value="20" />°</label>
+      <label>Max. Winkel V:<input id="maxVer" type="number" min="0" max="180" value="20" />°</label>
+      <label>Glättung:<input id="smoothing" type="range" min="0" max="100" value="50" /> <span id="smoothingVal">50%</span></label>
     </div>
   </header>
 
@@ -34,76 +47,73 @@
     <ul id="clients"></ul>
   </section>
 
-  <section>
-    <h2>Sensordaten</h2>
-    <ul id="sensolog"></ul>
-  </section>
-
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
-
-    // Settings
-    const maxHor    = document.getElementById('maxHor');
-    const maxVer    = document.getElementById('maxVer');
-    const smoothing = document.getElementById('smoothing');
-    const smoothingVal = document.getElementById('smoothingVal');
-    function sendSettings() {
-      socket.emit('update-settings', {
-        maxHor: parseFloat(maxHor.value),
-        maxVer: parseFloat(maxVer.value),
-        smoothing: parseFloat(smoothing.value)/100
-      });
-    }
-    maxHor.addEventListener('change', sendSettings);
-    maxVer.addEventListener('change', sendSettings);
-    smoothing.addEventListener('input', () => {
-      smoothingVal.textContent = smoothing.value+'%';
-      sendSettings();
-    });
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'admin', deviceId: null });
     });
 
-    // Client‑Liste
-    const clientsEl = document.getElementById('clients');
+    const maxHorInput    = document.getElementById('maxHor');
+    const maxVerInput    = document.getElementById('maxVer');
+    const smoothingInput = document.getElementById('smoothing');
+    const smoothingVal   = document.getElementById('smoothingVal');
+    const clientsList    = document.getElementById('clients');
+
+    function sendSettings() {
+      const maxHor    = parseFloat(maxHorInput.value);
+      const maxVer    = parseFloat(maxVerInput.value);
+      const smoothing = parseFloat(smoothingInput.value) / 100;
+      socket.emit('update-settings', { maxHor, maxVer, smoothing });
+    }
+    maxHorInput.addEventListener('change', sendSettings);
+    maxVerInput.addEventListener('change', sendSettings);
+    smoothingInput.addEventListener('input', () => {
+      smoothingVal.textContent = smoothingInput.value + '%';
+      sendSettings();
+    });
+
+    // Client-Liste mit Kill-Buttons rendern
     socket.on('client-list', list => {
-      clientsEl.innerHTML = '';
+      clientsList.innerHTML = '';
       list.forEach(c => {
         const li = document.createElement('li');
         const left = document.createElement('div');
         left.classList.add('left');
-        const dot = document.createElement('span'); dot.classList.add('dot');
+
+        // Farbpunkt
+        const dot = document.createElement('span');
+        dot.classList.add('dot');
         if (c.color) dot.style.backgroundColor = c.color;
         left.appendChild(dot);
+
+        // Info-Text
         const info = document.createElement('span');
         info.classList.add('client-info');
         info.textContent = `${c.type} – ${c.deviceId} – ${c.ip}`;
         left.appendChild(info);
+
         li.appendChild(left);
-        clientsEl.appendChild(li);
+
+        // Nur bei control-Clients: Kill-Button
+        if (c.type === 'control') {
+          const btn = document.createElement('button');
+          btn.classList.add('kill-btn');
+          btn.textContent = '🗑️';
+          btn.title = 'Client kicken';
+          btn.onclick = () => {
+            socket.emit('kill-client', { socketId: c.socketId });
+          };
+          li.appendChild(btn);
+        }
+
+        clientsList.appendChild(li);
       });
     });
 
-    // Sensor‑Log: nur 1 Eintrag pro Client, aktuellste Werte
-    const sensorStore = {};
-    const sensologEl = document.getElementById('sensolog');
-    socket.on('sensor-data', data => {
-      sensorStore[data.deviceId] = data;
-      sensologEl.innerHTML = '';
-      Object.entries(sensorStore).forEach(([id, d]) => {
-        const li = document.createElement('li');
-        li.classList.add('sensor-values');
-        li.innerHTML = 
-          `ID=${id}\n`+
-          `α=${d.alpha.toFixed(1)}°, β=${d.beta.toFixed(1)}°, γ=${d.gamma.toFixed(1)}°\n`+
-          `accG=(${d.ax.toFixed(2)},${d.ay.toFixed(2)},${d.az.toFixed(2)})\n`+
-          `acc= ( ${d.lax.toFixed(2)}, ${d.lay.toFixed(2)}, ${d.laz.toFixed(2)})\n`+
-          `rotR=(${d.rr_alpha.toFixed(1)},${d.rr_beta.toFixed(1)},${d.rr_gamma.toFixed(1)})`;
-        sensologEl.appendChild(li);
-      });
-    });
+    // Optional: Feedback, wenn Client neu laden soll
+    socket.on('client-list', list => { /* bleibt leer */ });
   </script>
 </body>
 </html>
