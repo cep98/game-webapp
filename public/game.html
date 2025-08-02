@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.13)</title>
+  <title>Game Display mit Hindernissen (v1.14)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.13 Game</div>
+  <div id="version">v1.14 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -101,18 +101,6 @@
       }
     }
 
-    function pointToSegmentDistance(px, py, x1, y1, x2, y2){
-      const dx = x2 - x1;
-      const dy = y2 - y1;
-      const lengthSquared = dx * dx + dy * dy;
-      let t = ((px - x1) * dx + (py - y1) * dy) / (lengthSquared || 1);
-      t = Math.max(0, Math.min(1, t));
-      const projX = x1 + t * dx;
-      const projY = y1 + t * dy;
-      const dist = Math.hypot(px - projX, py - projY);
-      return { dist, projX, projY };
-    }
-
     function update(dt){
       if(!maskCtx) return;
       cleanup(performance.now());
@@ -121,27 +109,39 @@
         const p = pointers[id];
         const dx = p.sx - p.px, dy = p.sy - p.py;
         const segLen = Math.hypot(dx,dy);
+        const steps = Math.ceil(segLen / 8);
+        const hitRadius = ball.r * 1.1 + PTR_R;
 
-        const { dist, projX, projY } = pointToSegmentDistance(ball.x, ball.y, p.px, p.py, p.sx, p.sy);
-        if(dist <= ball.r + PTR_R){
-          let nx = ball.x - projX;
-          let ny = ball.y - projY;
-          const d = Math.hypot(nx, ny) || 1;
-          nx /= d; ny /= d;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const ix = p.px + dx * t;
+          const iy = p.py + dy * t;
 
-          const deltaT = Math.max(p.t - p.pt, 1);
-          const speed = segLen * 1000 / deltaT;
-          const strength = BASE_STRENGTH + speed * SPEED_SCALE;
+          const dist = Math.hypot(ball.x - ix, ball.y - iy);
+          if (dist <= hitRadius) {
+            let nx = ball.x - ix;
+            let ny = ball.y - iy;
+            const d = Math.hypot(nx, ny) || 1;
+            nx /= d; ny /= d;
 
-          ball.vx += nx * strength;
-          ball.vy += ny * strength;
+            const deltaT = Math.max(p.t - p.pt, 1);
+            const speed = segLen * 1000 / deltaT;
+            const strength = BASE_STRENGTH + speed * SPEED_SCALE;
 
-          const rx = projX - ball.x;
-          const ry = projY - ball.y;
-          const tx = -ny, ty = nx;
-          ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+            ball.vx += nx * strength;
+            ball.vy += ny * strength;
 
-          p.pt = p.t;
+            const rx = ix - ball.x;
+            const ry = iy - ball.y;
+            const tx = -ny, ty = nx;
+            ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+
+            ball.x += nx * 1.5;
+            ball.y += ny * 1.5;
+
+            p.pt = p.t;
+            break;
+          }
         }
       }
 
@@ -204,6 +204,12 @@
         ctx.arc(p.sx,p.sy,PTR_R,0,2*Math.PI);
         ctx.fill();
       }
+
+      // Debugkreis (optional)
+      // ctx.strokeStyle = 'white';
+      // ctx.beginPath();
+      // ctx.arc(ball.x, ball.y, ball.r + PTR_R, 0, 2*Math.PI);
+      // ctx.stroke();
     }
 
     let last=performance.now();
