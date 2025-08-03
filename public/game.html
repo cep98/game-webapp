@@ -192,18 +192,19 @@
         ctx.drawImage(bgImage,bx,by);
       } else ctx.clearRect(0,0,canvas.width,canvas.height);
 
-            // perspektivischer Schatten (leicht unscharf, unten links)
+            // perspektivischer Schatten unter dem Ball
       ctx.save();
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.9)';
-      ctx.shadowBlur = 10;
-      ctx.shadowOffsetX = -8;
-      ctx.shadowOffsetY = 8;
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetX = -6;
+      ctx.shadowOffsetY = 6;
       ctx.beginPath();
-      ctx.arc(ball.x, ball.y, ball.r, 0, 2 * Math.PI);
-      ctx.fillStyle = 'transparent'; // nur Schatten, kein sichtbarer Kreis
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,0)'; // nur Schatten
       ctx.fill();
       ctx.restore();
-      // rotating ball
+
+// rotating ball
       if(ballBase.complete){
         ctx.save();
         ctx.translate(ball.x,ball.y);
