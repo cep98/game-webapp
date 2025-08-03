@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.15)</title>
+  <title>Game Display mit Hindernissen (v1.16)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.15 Game</div>
+  <div id="version">v1.16 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -77,6 +77,151 @@
     const deviceColors = {};
     const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIndex=0;
-</script>
+
+    socket.on('draw', ({x,y,deviceId,color})=>{
+      if (!canvas.width) return;
+      const now  = performance.now();
+      const rawX = x * canvas.width, rawY = y * canvas.height;
+      if (color) deviceColors[deviceId] = color;
+      else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
+      const prev = pointers[deviceId];
+      if (prev) {
+        const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
+        const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
+        pointers[deviceId] = { sx,sy, px:prev.sx, py:prev.sy, t:now, pt:prev.pt };
+      } else {
+        pointers[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, t:now, pt:now };
+      }
+    });
+    socket.on('draw-end', ({deviceId})=> delete pointers[deviceId]);
+    socket.on('settings', data=> smoothing = data.smoothing);
+
+    function cleanup(now){
+      for(let id in pointers){
+        if(now - pointers[id].t > PTR_TTL) delete pointers[id];
+      }
+    }
+
+    function update(dt){
+      if(!maskCtx) return;
+      cleanup(performance.now());
+
+      for(let id in pointers){
+        const p = pointers[id];
+        const dx = p.sx - p.px, dy = p.sy - p.py;
+        const segLen = Math.hypot(dx,dy);
+        const pixelStep = PTR_R*0.5;
+        let steps = Math.ceil(segLen/pixelStep);
+        steps = Math.min(Math.max(steps,1),500);
+        let hit=false;
+        for(let i=0;i<=steps;i++){
+          const t=i/steps;
+          const ix=p.px+dx*t, iy=p.py+dy*t;
+          if((ball.x-ix)**2+(ball.y-iy)**2 <= (ball.r+PTR_R)**2){
+            hit=true; break;
+          }
+        }
+        if(hit){
+          const midx=p.px+dx*0.5, midy=p.py+dy*0.5;
+          let nx=ball.x-midx, ny=ball.y-midy;
+          const d=Math.hypot(nx,ny)||1; nx/=d; ny/=d;
+          const deltaT=Math.max(p.t-p.pt,1);
+          const speed=segLen*1000/deltaT;
+          const strength=BASE_STRENGTH+speed*SPEED_SCALE;
+          ball.vx+=nx*strength;
+          ball.vy+=ny*strength;
+          const rx=midx-ball.x, ry=midy-ball.y;
+          const tx=-ny, ty=nx;
+          ball.angularVelocity+=(rx*ty-ry*tx)*strength*0.005;
+        }
+        p.pt = p.t;
+      }
+
+      ball.x += ball.vx*dt;
+      ball.y += ball.vy*dt;
+      ball.angle += ball.angularVelocity*dt;
+
+      let maxCorrectionSteps = 5;
+      while (maxCorrectionSteps-- > 0) {
+        let corrected = false;
+        for(let i=0;i<32;i++){
+          const ang = i*(Math.PI*2/32);
+          const ex = Math.round(ball.x + Math.cos(ang)*(ball.r+1));
+          const ey = Math.round(ball.y + Math.sin(ang)*(ball.r+1));
+          if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
+            const d = maskCtx.getImageData(ex,ey,1,1).data;
+            if(d[0]>200 && d[1]>200 && d[2]>200){
+              let nx = Math.cos(ang), ny = Math.sin(ang);
+              const vDotN = ball.vx*nx + ball.vy*ny;
+              ball.vx -= 2*vDotN*nx;
+              ball.vy -= 2*vDotN*ny;
+              ball.x = ex - nx*(ball.r+1);
+              ball.y = ey - ny*(ball.r+1);
+              corrected = true;
+              break;
+            }
+          }
+        }
+        if (!corrected) break;
+      }
+
+      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
+
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
+    }
+
+    function draw(){
+      if(bgImage.complete){
+        const bx=(canvas.width-bgImage.width)/2;
+        const by=(canvas.height-bgImage.height)/2;
+        ctx.drawImage(bgImage,bx,by);
+      } else ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // Schlagschatten (rund, weich, versetzt)
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+      ctx.shadowBlur = 15;
+      ctx.shadowOffsetX = 15;
+      ctx.shadowOffsetY = 15;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      ctx.fill();
+      ctx.restore();
+
+      if(ballBase.complete){
+        ctx.save();
+        ctx.translate(ball.x, ball.y);
+        ctx.rotate(ball.angle);
+        ctx.drawImage(ballBase, -ball.r, -ball.r, ball.r*2, ball.r*2);
+        ctx.restore();
+      }
+
+      if(ballShadow.complete){
+        ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
+      }
+
+      for(let id in pointers){
+        const p=pointers[id];
+        ctx.fillStyle=deviceColors[id];
+        ctx.beginPath();
+        ctx.arc(p.sx,p.sy,PTR_R,0,2*Math.PI);
+        ctx.fill();
+      }
+    }
+
+    let last=performance.now();
+    (function loop(now){
+      const dt=(now-last)/16.67; last=now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    })(last);
+  </script>
 </body>
 </html>
