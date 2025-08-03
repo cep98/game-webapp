@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display v1.20 - Glitzer + weniger Kollisionen</title>
+  <title>Game Display mit Glitzer-Partikeln</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.20 Glitzer + weniger Kollisionen</div>
+  <div id="version">v1.18 Glitzer-Partikel</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -77,27 +77,27 @@
     const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIndex=0;
 
-    // Partikel
     const particles = [];
 
-    function spawnParticles(x, y, baseColor, intensity = 1) {
-      const count = Math.floor(6 * intensity);
+    function spawnParticles(x, y, baseColor, count = 3) {
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * 2 * Math.PI;
-        const speed = 0.5 + Math.random() * 2.5;
-        const flickerColor = Math.random() < 0.5 ? baseColor : (Math.random() < 0.5 ? '#ffd700' : '#ffffff');
+        const speed = 0.5 + Math.random() * 1.5;
         particles.push({
           x, y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
           alpha: 1,
-          radius: 1.5 + Math.random() * 1.5,
-          color: flickerColor
+          radius: 1 + Math.random()*1.5,
+          baseColor: baseColor,
+          blinkFreq: 200 + Math.random()*300, // ms
+          birth: performance.now()
         });
       }
     }
 
     function updateParticles(dt) {
+      const now = performance.now();
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.x += p.vx;
@@ -170,7 +170,7 @@
             ball.x += nx * 1.5;
             ball.y += ny * 1.5;
 
-            spawnParticles(ix, iy, deviceColors[id], strength * 30);
+            spawnParticles(ix, iy, deviceColors[id]); // Partikel auslösen mit Farbe
 
             p.pt = p.t;
             break;
@@ -183,8 +183,8 @@
       ball.angle += ball.angularVelocity*dt;
 
       let correctionX = 0, correctionY = 0, hitCount = 0;
-      for(let i=0;i<8;i++){  // nur 8 Punkte!
-        const ang = i*(Math.PI*2/8);
+      for(let i=0;i<16;i++){
+        const ang = i*(Math.PI*2/16);
         const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
         const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
@@ -258,10 +258,12 @@
         ctx.fill();
       }
 
+      const now = performance.now();
       for(const p of particles){
         ctx.beginPath();
         ctx.globalAlpha = p.alpha;
-        ctx.fillStyle = p.color;
+        const blink = Math.floor((now - p.birth) / p.blinkFreq) % 2 === 0;
+        ctx.fillStyle = blink ? p.baseColor : '#fff';
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2);
         ctx.fill();
       }
