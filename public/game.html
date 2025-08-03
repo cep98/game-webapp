@@ -77,6 +77,8 @@
     // Ball state
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
+let particles = [];
+
     // Pointers & colors
     const pointers     = {};
     const deviceColors = {};
@@ -107,7 +109,15 @@
       }
     }
 
-    function update(dt){
+    function update(dt) {
+// Partikel aktualisieren
+particles = particles.filter(p => p.alpha > 0.05);
+for (let p of particles) {
+  p.x += p.vx * dt;
+  p.y += p.vy * dt;
+  p.alpha *= 0.92;
+}
+
       if(!maskCtx) return;
       cleanup(performance.now());
 
@@ -141,6 +151,20 @@
           ball.angularVelocity+=(rx*ty-ry*tx)*strength*0.005;
         }
         p.pt = p.t;
+// Partikeleffekt erzeugen
+for (let j = 0; j < 6; j++) {
+  const angle = Math.random() * 2 * Math.PI;
+  const speed = 1 + Math.random() * 2;
+  particles.push({
+    x: ix,
+    y: iy,
+    vx: Math.cos(angle) * speed,
+    vy: Math.sin(angle) * speed,
+    alpha: 1.0,
+    radius: 2 + Math.random() * 2
+  });
+}
+
       }
 
       // integrate ball
@@ -204,6 +228,15 @@
       if(ballShadow.complete){
         ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
       }
+      
+// Partikel zeichnen
+for (let p of particles) {
+  ctx.beginPath();
+  ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,' + p.alpha.toFixed(2) + ')';
+  ctx.fill();
+}
+
       // pointers
       for(let id in pointers){
         const p=pointers[id];
