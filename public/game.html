@@ -79,6 +79,7 @@
 
     // Partikeleffekte
     const particles = [];
+    const lastHit = {};
 
     function spawnParticles(x, y, count = 12) {
       for (let i = 0; i < count; i++) {
@@ -167,7 +168,12 @@
             ball.x += nx * 1.5;
             ball.y += ny * 1.5;
 
-            spawnParticles(ix, iy); // <<< Partikel auslösen
+            const last = lastHit[id] || 0;
+            const now = performance.now();
+            if (now - last > 80) {
+              spawnParticles(ix, iy);
+              lastHit[id] = now;
+            }
 
             p.pt = p.t;
             break;
