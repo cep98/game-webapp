@@ -1,10 +1,9 @@
-
 <!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.16)</title>
+  <title>Game Display mit Hindernissen (v1.17)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -20,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.16 Game</div>
+  <div id="version">v1.17 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -110,59 +109,73 @@
         const p = pointers[id];
         const dx = p.sx - p.px, dy = p.sy - p.py;
         const segLen = Math.hypot(dx,dy);
-        const pixelStep = PTR_R*0.5;
-        let steps = Math.ceil(segLen/pixelStep);
-        steps = Math.min(Math.max(steps,1),500);
-        let hit=false;
-        for(let i=0;i<=steps;i++){
-          const t=i/steps;
-          const ix=p.px+dx*t, iy=p.py+dy*t;
-          if((ball.x-ix)**2+(ball.y-iy)**2 <= (ball.r+PTR_R)**2){
-            hit=true; break;
+        const steps = Math.ceil(segLen / 8);
+        const hitRadius = ball.r * 1.1 + PTR_R;
+
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const ix = p.px + dx * t;
+          const iy = p.py + dy * t;
+
+          const dist = Math.hypot(ball.x - ix, ball.y - iy);
+          if (dist <= hitRadius) {
+            let nx = ball.x - ix;
+            let ny = ball.y - iy;
+            const d = Math.hypot(nx, ny) || 1;
+            nx /= d; ny /= d;
+
+            const deltaT = Math.max(p.t - p.pt, 1);
+            const speed = segLen * 1000 / deltaT;
+            const strength = BASE_STRENGTH + speed * SPEED_SCALE;
+
+            ball.vx += nx * strength;
+            ball.vy += ny * strength;
+
+            const rx = ix - ball.x;
+            const ry = iy - ball.y;
+            const tx = -ny, ty = nx;
+            ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+
+            ball.x += nx * 1.5;
+            ball.y += ny * 1.5;
+
+            p.pt = p.t;
+            break;
           }
         }
-        if(hit){
-          const midx=p.px+dx*0.5, midy=p.py+dy*0.5;
-          let nx=ball.x-midx, ny=ball.y-midy;
-          const d=Math.hypot(nx,ny)||1; nx/=d; ny/=d;
-          const deltaT=Math.max(p.t-p.pt,1);
-          const speed=segLen*1000/deltaT;
-          const strength=BASE_STRENGTH+speed*SPEED_SCALE;
-          ball.vx+=nx*strength;
-          ball.vy+=ny*strength;
-          const rx=midx-ball.x, ry=midy-ball.y;
-          const tx=-ny, ty=nx;
-          ball.angularVelocity+=(rx*ty-ry*tx)*strength*0.005;
-        }
-        p.pt = p.t;
       }
 
       ball.x += ball.vx*dt;
       ball.y += ball.vy*dt;
       ball.angle += ball.angularVelocity*dt;
 
-      let maxCorrectionSteps = 5;
-      while (maxCorrectionSteps-- > 0) {
-        let corrected = false;
-        for(let i=0;i<32;i++){
-          const ang = i*(Math.PI*2/32);
-          const ex = Math.round(ball.x + Math.cos(ang)*(ball.r+1));
-          const ey = Math.round(ball.y + Math.sin(ang)*(ball.r+1));
-          if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
-            const d = maskCtx.getImageData(ex,ey,1,1).data;
-            if(d[0]>200 && d[1]>200 && d[2]>200){
-              let nx = Math.cos(ang), ny = Math.sin(ang);
-              const vDotN = ball.vx*nx + ball.vy*ny;
-              ball.vx -= 2*vDotN*nx;
-              ball.vy -= 2*vDotN*ny;
-              ball.x = ex - nx*(ball.r+1);
-              ball.y = ey - ny*(ball.r+1);
-              corrected = true;
-              break;
-            }
+      // Korrekte Maskenkollision: Ball darf nur auf heller Fläche bleiben
+      let correctionX = 0, correctionY = 0, hitCount = 0;
+      for(let i=0;i<16;i++){
+        const ang = i*(Math.PI*2/16);
+        const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
+        const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
+        if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
+          const d = maskCtx.getImageData(ex,ey,1,1).data;
+          // Weiß = Spielfläche → also Kollision, wenn der Punkt NICHT weiß
+          if(d[0]<200 || d[1]<200 || d[2]<200){
+            const nx = Math.cos(ang);
+            const ny = Math.sin(ang);
+            correctionX += nx;
+            correctionY += ny;
+            hitCount++;
           }
         }
-        if (!corrected) break;
+      }
+
+      if (hitCount > 0) {
+        correctionX /= hitCount;
+        correctionY /= hitCount;
+        const vDotN = ball.vx*correctionX + ball.vy*correctionY;
+        ball.vx -= 2*vDotN*correctionX;
+        ball.vy -= 2*vDotN*correctionY;
+        ball.x += correctionX * 2;
+        ball.y += correctionY * 2;
       }
 
       if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
@@ -181,29 +194,28 @@
         const by=(canvas.height-bgImage.height)/2;
         ctx.drawImage(bgImage,bx,by);
       } else ctx.clearRect(0,0,canvas.width,canvas.height);
-
-      // Schlagschatten (rund, weich, versetzt)
-      ctx.save();
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-      ctx.shadowBlur = 15;
-      ctx.shadowOffsetX = 15;
-      ctx.shadowOffsetY = 15;
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,0,0,1)';
-      ctx.fill();
-      ctx.restore();
+// Schlagschatten unter dem Ball
+ctx.save();
+ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+ctx.shadowBlur = 15;
+ctx.shadowOffsetX = -15;
+ctx.shadowOffsetY = 15;
+ctx.beginPath();
+ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+ctx.fillStyle = 'rgba(0,0,0,1)';
+ctx.fill();
+ctx.restore();
 
       if(ballBase.complete){
         ctx.save();
-        ctx.translate(ball.x, ball.y);
+        ctx.translate(ball.x,ball.y);
         ctx.rotate(ball.angle);
-        ctx.drawImage(ballBase, -ball.r, -ball.r, ball.r*2, ball.r*2);
+        ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
         ctx.restore();
       }
 
       if(ballShadow.complete){
-        ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r*2, ball.r*2);
+        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
       }
 
       for(let id in pointers){
