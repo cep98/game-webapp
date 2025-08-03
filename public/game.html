@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.18 Game + Partikel</div>
+  <div id="version">v1.18 Game + Partikel (Kollision)</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -167,7 +167,8 @@
             ball.x += nx * 1.5;
             ball.y += ny * 1.5;
 
-            spawnParticles(ix, iy); // <<< Partikel auslösen
+            const particleCount = Math.min(5 + Math.floor(strength * 25), 50);
+            spawnParticles(ix, iy, particleCount); // Partikel direkt am Kollisionspunkt
 
             p.pt = p.t;
             break;
