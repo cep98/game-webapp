@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.18 + Partikel)</title>
+  <title>Game Display v1.19 – Partikel mit Farbe & Glitzer</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.18 Game + Partikel (Kollision)</div>
+  <div id="version">v1.19 Game + Partikel</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -80,16 +80,17 @@
     // Partikeleffekte
     const particles = [];
 
-    function spawnParticles(x, y, count = 12) {
+    function spawnParticles(x, y, count = 8, color = '#fff') {
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * 2 * Math.PI;
-        const speed = 1 + Math.random() * 2;
+        const speed = 1 + Math.random() * 1.5;
         particles.push({
           x, y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
           alpha: 1,
-          radius: 2 + Math.random()*1
+          radius: 1.5 + Math.random()*1,
+          baseColor: color
         });
       }
     }
@@ -99,7 +100,7 @@
         const p = particles[i];
         p.x += p.vx;
         p.y += p.vy;
-        p.alpha -= 0.03 * dt;
+        p.alpha -= 0.035 * dt;
         if (p.alpha <= 0) particles.splice(i, 1);
       }
     }
@@ -167,15 +168,17 @@
             ball.x += nx * 1.5;
             ball.y += ny * 1.5;
 
-            const particleCount = Math.min(5 + Math.floor(strength * 25), 50);
-            // Richtung vom Pointerzentrum zum Ballmittelpunkt
-const toBallX = ball.x - p.sx;
-const toBallY = ball.y - p.sy;
-const distToBall = Math.hypot(toBallX, toBallY) || 1;
-const colX = p.sx + (toBallX / distToBall) * PTR_R;
-const colY = p.sy + (toBallY / distToBall) * PTR_R;
-spawnParticles(colX, colY, particleCount); // Partikel exakt am Rand des Lasers
+            // === Kollisionspunkt am Rand des Pointers ===
+            const toBallX = ball.x - p.sx;
+            const toBallY = ball.y - p.sy;
+            const distToBall = Math.hypot(toBallX, toBallY) || 1;
+            const colX = p.sx + (toBallX / distToBall) * PTR_R;
+            const colY = p.sy + (toBallY / distToBall) * PTR_R;
 
+            const laserColor = deviceColors[id] || '#fff';
+            const particleCount = 3 + Math.round(strength * 30); // weniger Partikel bei geringerem Aufprall
+
+            spawnParticles(colX, colY, particleCount, laserColor);
 
             p.pt = p.t;
             break;
@@ -231,7 +234,6 @@ spawnParticles(colX, colY, particleCount); // Partikel exakt am Rand des Lasers
         ctx.drawImage(bgImage,bx,by);
       } else ctx.clearRect(0,0,canvas.width,canvas.height);
 
-      // Schatten
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
       ctx.shadowBlur = 15;
@@ -266,11 +268,19 @@ spawnParticles(colX, colY, particleCount); // Partikel exakt am Rand des Lasers
       for(const p of particles){
         ctx.beginPath();
         ctx.globalAlpha = p.alpha;
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = lightenColor(p.baseColor, 1 - p.alpha);
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2);
         ctx.fill();
       }
       ctx.globalAlpha = 1.0;
+    }
+
+    function lightenColor(color, factor) {
+      const ctxTemp = document.createElement("canvas").getContext("2d");
+      ctxTemp.fillStyle = color;
+      const base = ctxTemp.fillStyle;
+      const rgb = base.match(/\d+/g).map(Number);
+      return `rgb(${rgb.map(v => Math.min(255, v + factor*100)).join(",")})`;
     }
 
     let last=performance.now();
