@@ -170,7 +170,8 @@
             ball.x += nx * 1.5;
             ball.y += ny * 1.5;
 
-            spawnParticles(ix, iy, deviceColors[id]); // Partikel auslösen mit Farbe
+            spawnParticles(ix, iy, deviceColors[id]); // Partikel direkt an Kollisionspunkt
+
 
             p.pt = p.t;
             break;
