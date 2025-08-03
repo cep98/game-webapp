@@ -168,7 +168,14 @@
             ball.y += ny * 1.5;
 
             const particleCount = Math.min(5 + Math.floor(strength * 25), 50);
-            spawnParticles(ix, iy, particleCount); // Partikel direkt am Kollisionspunkt
+            // Richtung vom Pointerzentrum zum Ballmittelpunkt
+const toBallX = ball.x - p.sx;
+const toBallY = ball.y - p.sy;
+const distToBall = Math.hypot(toBallX, toBallY) || 1;
+const colX = p.sx + (toBallX / distToBall) * PTR_R;
+const colY = p.sy + (toBallY / distToBall) * PTR_R;
+spawnParticles(colX, colY, particleCount); // Partikel exakt am Rand des Lasers
+
 
             p.pt = p.t;
             break;
