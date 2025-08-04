@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.18 + Partikel)</title>
+  <title>Game Display mit Hindernissen</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -19,7 +19,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.18 Game + Partikel</div>
+  <div id="version">v1.18 Game + Glitzer</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -74,32 +74,24 @@
 
     const pointers     = {};
     const deviceColors = {};
+    const pointerFlash = {};
     const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
-
-function hexToRgb(hex) {
-  const parsed = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return parsed ? {
-    r: parseInt(parsed[1], 16),
-    g: parseInt(parsed[2], 16),
-    b: parseInt(parsed[3], 16)
-  } : { r: 255, g: 255, b: 255 };
-}
-
     let colorIndex=0;
 
-    // Partikeleffekte
     const particles = [];
 
-    function spawnParticles(x, y, count = 12) {
+    function spawnParticles(x, y, color, count = 3) {
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * 2 * Math.PI;
-        const speed = 1 + Math.random() * 2;
+        const speed = 1 + Math.random() * 1.5;
         particles.push({
           x, y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed,
           alpha: 1,
-          radius: 2 + Math.random()*1
+          radius: 1 + Math.random(),
+          baseColor: color,
+          flickerTimer: Math.floor(Math.random()*6)+2
         });
       }
     }
@@ -109,8 +101,14 @@ function hexToRgb(hex) {
         const p = particles[i];
         p.x += p.vx;
         p.y += p.vy;
-        p.alpha -= 0.03 * dt;
-        if (p.alpha <= 0) particles.splice(i, 1);
+        p.alpha -= 0.035 * dt;
+        p.flickerTimer -= 1;
+        if (p.alpha <= 0) {
+          particles.splice(i, 1);
+        } else if (p.flickerTimer <= 0) {
+          p.flickerTimer = Math.floor(Math.random()*6)+2;
+          p.isWhite = !p.isWhite;
+        }
       }
     }
 
@@ -129,6 +127,7 @@ function hexToRgb(hex) {
         pointers[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, t:now, pt:now };
       }
     });
+
     socket.on('draw-end', ({deviceId})=> delete pointers[deviceId]);
     socket.on('settings', data=> smoothing = data.smoothing);
 
@@ -177,8 +176,9 @@ function hexToRgb(hex) {
             ball.x += nx * 1.5;
             ball.y += ny * 1.5;
 
-            spawnParticles(ix, iy); // <<< Partikel auslösen
-            p.flash = 5;
+            spawnParticles(ix, iy, deviceColors[id]);
+
+            pointerFlash[id] = 5;
 
             p.pt = p.t;
             break;
@@ -225,6 +225,10 @@ function hexToRgb(hex) {
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
       ball.angularVelocity *= ANGULAR_FRICTION;
+
+      for (let id in pointerFlash) {
+        if (pointerFlash[id] > 0) pointerFlash[id] -= 1;
+      }
     }
 
     function draw(){
@@ -234,7 +238,11 @@ function hexToRgb(hex) {
         ctx.drawImage(bgImage,bx,by);
       } else ctx.clearRect(0,0,canvas.width,canvas.height);
 
-      // Schatten
+      // Ball
+      if(ballShadow.complete){
+        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
+      }
+
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
       ctx.shadowBlur = 15;
@@ -254,38 +262,48 @@ function hexToRgb(hex) {
         ctx.restore();
       }
 
-      if(ballShadow.complete){
-        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
-      }
-
       for(let id in pointers){
-        const p=pointers[id];
-        
-let color = deviceColors[id];
-if (p.flash && p.flash > 0) {
-  const blend = p.flash / 5;
-  const base = hexToRgb(color);
-  const r = Math.round(base.r + (255 - base.r) * blend);
-  const g = Math.round(base.g + (255 - base.g) * blend);
-  const b = Math.round(base.b + (255 - base.b) * blend);
-  color = `rgb(${r},${g},${b})`;
-  p.flash--;
-}
-ctx.fillStyle = color;
-ctx.beginPath();
-ctx.arc(p.sx, p.sy, PTR_R, 0, 2 * Math.PI);
-ctx.fill();
-
+        const p = pointers[id];
+        let baseColor = deviceColors[id] || "#fff";
+        let alpha = 1.0;
+        let color = baseColor;
+        if (pointerFlash[id] && pointerFlash[id] > 0) {
+          const t = pointerFlash[id] / 5;
+          color = blendColors(baseColor, "#fff", t);
+        }
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(p.sx, p.sy, PTR_R, 0, 2 * Math.PI);
+        ctx.fill();
       }
 
-      for(const p of particles){
+      for (const p of particles){
         ctx.beginPath();
         ctx.globalAlpha = p.alpha;
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = p.isWhite ? "#fff" : p.baseColor;
         ctx.arc(p.x, p.y, p.radius, 0, Math.PI*2);
         ctx.fill();
       }
       ctx.globalAlpha = 1.0;
+    }
+
+    function blendColors(c1, c2, t){
+      const a = hexToRgb(c1);
+      const b = hexToRgb(c2);
+      const r = Math.round(a.r*(1-t) + b.r*t);
+      const g = Math.round(a.g*(1-t) + b.g*t);
+      const b2 = Math.round(a.b*(1-t) + b.b*t);
+      return `rgb(${r},${g},${b2})`;
+    }
+
+    function hexToRgb(hex){
+      hex = hex.replace('#','');
+      const bigint = parseInt(hex, 16);
+      return {
+        r: (bigint >> 16) & 255,
+        g: (bigint >> 8) & 255,
+        b: bigint & 255
+      };
     }
 
     let last=performance.now();
