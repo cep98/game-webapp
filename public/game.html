@@ -3,10 +3,11 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Game Display (Motion)</title>
+  <title>Game Display (optimiert)</title>
   <style>
     html, body {
       margin: 0; padding: 0; height: 100%; background: #000;
+      overflow: hidden;
     }
     canvas {
       display: block; margin: 0 auto;
@@ -19,7 +20,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.0 Game (Motion)</div>
+  <div id="version">v2.1 Game Optimiert</div>
   <canvas id="gameCanvas"></canvas>
   <script src="/socket.io/socket.io.js"></script>
   <script>
@@ -27,39 +28,51 @@
     const ctx = canvas.getContext('2d');
     const socket = io();
 
-    // Images (Ball, Background, etc.)
     const bgImage = new Image();
+    const maskImage = new Image();
     const ballImage = new Image();
+    const ballShadow = new Image();
+
     bgImage.src = '/background.png';
+    maskImage.src = '/mask.png';
     ballImage.src = '/ball-base.png';
+    ballShadow.src = '/ball-shadow.png';
 
-    let width = 0, height = 0;
-    bgImage.onload = () => {
-      width = bgImage.width;
-      height = bgImage.height;
-      canvas.width = width;
-      canvas.height = height;
-      ball.x = width / 2;
-      ball.y = height / 2;
-    }
+    let maskCanvas, maskCtx;
+    let loaded = 0;
 
-    const PTR_RADIUS = 16;
+    [bgImage, maskImage].forEach(img => {
+      img.onload = () => {
+        if (++loaded === 2) {
+          canvas.width = maskImage.width;
+          canvas.height = maskImage.height;
+          maskCanvas = document.createElement('canvas');
+          maskCanvas.width = maskImage.width;
+          maskCanvas.height = maskImage.height;
+          maskCtx = maskCanvas.getContext('2d');
+          maskCtx.drawImage(maskImage, 0, 0);
+          ball.x = canvas.width / 2;
+          ball.y = canvas.height / 2;
+        }
+      };
+    });
+
+    const PTR_R = 16;
     const pointers = {};
     const deviceColors = {};
-    const COLORS = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231'];
+    const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4'];
     let colorIndex = 0;
 
-    let ball = {
-      x: 0, y: 0,
-      vx: 0, vy: 0,
-      r: 20,
+    const ball = {
+      x: 0, y: 0, vx: 0, vy: 0,
+      r: 20, angle: 0, angularVelocity: 0
     };
 
-    // PARTICLES
+    // Partikel
     const particles = [];
-    function spawnParticles(x, y, color, count = 6) {
+    function spawnParticles(x, y, color, count = 4) {
       for (let i = 0; i < count; i++) {
-        const angle = Math.random() * 2 * Math.PI;
+        const angle = Math.random() * Math.PI * 2;
         const speed = 1 + Math.random() * 2;
         particles.push({
           x, y,
@@ -68,30 +81,27 @@
           alpha: 1,
           color,
           t: 0,
-          sparkle: Math.random() * 30 + 10
+          sparkle: Math.random() * 20 + 10
         });
       }
     }
+
     function updateParticles(dt) {
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.x += p.vx;
         p.y += p.vy;
         p.t += dt;
-        p.alpha -= 0.02 * dt;
+        p.alpha -= 0.03 * dt;
         if (p.alpha <= 0) particles.splice(i, 1);
       }
     }
 
-    // SOCKET EVENTS
+    // Eingehende Daten
     socket.on('motion', ({ x, y, deviceId, color }) => {
-      if (!color && !deviceColors[deviceId]) {
-        deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
-      }
-      if (color) deviceColors[deviceId] = color;
-      if (!pointers[deviceId]) {
-        pointers[deviceId] = { x, y, px: x, py: y };
-      } else {
+      if (!deviceColors[deviceId]) deviceColors[deviceId] = color || COLORS[colorIndex++ % COLORS.length];
+      if (!pointers[deviceId]) pointers[deviceId] = { x, y, px: x, py: y };
+      else {
         pointers[deviceId].px = pointers[deviceId].x;
         pointers[deviceId].py = pointers[deviceId].y;
         pointers[deviceId].x = x;
@@ -99,48 +109,109 @@
       }
     });
 
-    // UPDATE + COLLISION
+    // Physik
     function update(dt) {
       updateParticles(dt);
+
       for (let id in pointers) {
         const p = pointers[id];
-        const dx = p.x * width - ball.x;
-        const dy = p.y * height - ball.y;
+        const x = p.x * canvas.width;
+        const y = p.y * canvas.height;
+        const dx = x - ball.x;
+        const dy = y - ball.y;
         const dist = Math.hypot(dx, dy);
-        if (dist < PTR_RADIUS + ball.r) {
+        if (dist < PTR_R + ball.r) {
           const nx = dx / dist;
           const ny = dy / dist;
-          ball.vx += nx * 0.5;
-          ball.vy += ny * 0.5;
+          ball.vx += nx * 0.4;
+          ball.vy += ny * 0.4;
           spawnParticles(ball.x + nx * ball.r, ball.y + ny * ball.r, deviceColors[id]);
         }
       }
+
       ball.vx *= 0.98;
       ball.vy *= 0.98;
       ball.x += ball.vx * dt;
       ball.y += ball.vy * dt;
+
+      // Hindernismaske prüfen
+      let correctionX = 0, correctionY = 0, hitCount = 0;
+      for (let i = 0; i < 16; i++) {
+        const ang = i * (Math.PI * 2 / 16);
+        const ex = Math.round(ball.x + Math.cos(ang) * ball.r);
+        const ey = Math.round(ball.y + Math.sin(ang) * ball.r);
+        if (ex >= 0 && ey >= 0 && ex < maskCanvas.width && ey < maskCanvas.height) {
+          const d = maskCtx.getImageData(ex, ey, 1, 1).data;
+          if (d[0] < 200 || d[1] < 200 || d[2] < 200) {
+            const nx = Math.cos(ang);
+            const ny = Math.sin(ang);
+            correctionX += nx;
+            correctionY += ny;
+            hitCount++;
+          }
+        }
+      }
+      if (hitCount > 0) {
+        correctionX /= hitCount;
+        correctionY /= hitCount;
+        const vDotN = ball.vx * correctionX + ball.vy * correctionY;
+        ball.vx -= 2 * vDotN * correctionX;
+        ball.vy -= 2 * vDotN * correctionY;
+        ball.x += correctionX * 2;
+        ball.y += correctionY * 2;
+      }
+
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -0.8; }
+      if (ball.x + ball.r > canvas.width) { ball.x = canvas.width - ball.r; ball.vx *= -0.8; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -0.8; }
+      if (ball.y + ball.r > canvas.height) { ball.y = canvas.height - ball.r; ball.vy *= -0.8; }
     }
 
-    // DRAW
+    // Zeichnen
     function draw() {
-      ctx.clearRect(0, 0, width, height);
-      ctx.drawImage(bgImage, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (bgImage.complete) ctx.drawImage(bgImage, 0, 0);
 
-      ctx.drawImage(ballImage, ball.x - ball.r, ball.y - ball.r, ball.r * 2, ball.r * 2);
+      // Ballschatten
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+      ctx.shadowBlur = 20;
+      ctx.shadowOffsetX = -10;
+      ctx.shadowOffsetY = 10;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fill();
+      ctx.restore();
 
+      // Ball
+      if (ballImage.complete) {
+        ctx.save();
+        ctx.translate(ball.x, ball.y);
+        ctx.rotate(ball.angle);
+        ctx.drawImage(ballImage, -ball.r, -ball.r, ball.r * 2, ball.r * 2);
+        ctx.restore();
+      }
+
+      if (ballShadow.complete) {
+        ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r * 2, ball.r * 2);
+      }
+
+      // Laserpunkte
       for (let id in pointers) {
         const p = pointers[id];
         ctx.beginPath();
         ctx.fillStyle = deviceColors[id];
-        ctx.arc(p.x * width, p.y * height, PTR_RADIUS, 0, Math.PI * 2);
+        ctx.arc(p.x * canvas.width, p.y * canvas.height, PTR_R, 0, Math.PI * 2);
         ctx.fill();
       }
 
+      // Partikel
       for (const p of particles) {
         ctx.beginPath();
         ctx.globalAlpha = p.alpha;
         ctx.fillStyle = Math.floor(p.t) % p.sparkle < p.sparkle / 2 ? p.color : '#fff';
-        ctx.arc(p.x, p.y, 2, 0, 2 * Math.PI);
+        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
         ctx.fill();
       }
       ctx.globalAlpha = 1.0;
