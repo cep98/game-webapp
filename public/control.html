@@ -26,7 +26,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.7 Control</div>
+  <div id="version">v1.8 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -44,13 +44,13 @@
       socket.emit('request-settings');
     });
 
-    // Farbe vom Server bekommen, aber Button erst nach Permission zeigen
+    // Farbe vom Server bekommen
     socket.on('assign-color', color => {
       myColor = color;
       laserBtn.style.borderColor = myColor;
     });
 
-    // Gyro-Button: nach Permission Laser-Button anzeigen
+    // Gyro-Freigabe
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
@@ -58,41 +58,59 @@
           return alert('Gyroskop‑Zugriff benötigt!');
         }
       }
-      // Wenn Farbe schon da ist, direkt wechseln
       if (myColor) {
         gyroBtn.style.display  = 'none';
         laserBtn.style.display = 'block';
       }
     });
 
-    // Laser starten
+    // Start Laser
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
-      zeroA = lastAlpha; zeroB = lastBeta;
+      zeroA = lastAlpha;
+      zeroB = lastBeta;
     }, { passive:false });
 
-    // Laser stoppen
+    // Stop Laser
     laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
       drawing = false;
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
+    // Optimiertes Senden bei Bewegung
+    let lastSent = 0;
+    let lastX = 0, lastY = 0;
+
     window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha; lastBeta = ev.beta;
+      lastAlpha = ev.alpha;
+      lastBeta = ev.beta;
       if (!drawing) return;
-      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
-      let dB = lastBeta  - zeroB;
-      // Normierung (gleiche Logik wie vorher, adapte maxHor/maxVer falls nötig):
+
+      let dA = lastAlpha - zeroA;
+      if (dA > 180) dA -= 360;
+      if (dA < -180) dA += 360;
+      let dB = lastBeta - zeroB;
+
       const maxHor = 20, maxVer = 20;
       dA = Math.max(-maxHor, Math.min(maxHor, dA));
       dB = Math.max(-maxVer, Math.min(maxVer, dB));
+
       const x = 1 - ((dA + maxHor) / (2 * maxHor));
       const y = 1 - ((dB + maxVer) / (2 * maxVer));
-      socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
+
+      const now = Date.now();
+      const dx = Math.abs(x - lastX);
+      const dy = Math.abs(y - lastY);
+
+      if ((now - lastSent > 50) && (dx > 0.01 || dy > 0.01)) {
+        socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
+        lastSent = now;
+        lastX = x;
+        lastY = y;
+      }
     });
   </script>
 </body>
 </html>
-
