@@ -26,31 +26,32 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.8 Control</div>
+  <div id="version">v1.9 Control (Loop)</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket    = io();
-    const gyroBtn   = document.getElementById('gyroBtn');
-    const laserBtn  = document.getElementById('laserBtn');
-    let myColor     = null;
-    let drawing     = false;
-    let zeroA = 0, zeroB = 0, lastAlpha = 0, lastBeta = 0;
+    const socket     = io();
+    const gyroBtn    = document.getElementById('gyroBtn');
+    const laserBtn   = document.getElementById('laserBtn');
+    let myColor      = null;
+    let drawing      = false;
+    let zeroA = 0, zeroB = 0;
+    let lastAlpha = 0, lastBeta = 0;
+    let lastSentX = 0, lastSentY = 0;
 
+    // Empfang & Setup
     socket.on('connect', () => {
-      socket.emit('identify',      { role:'control', deviceId: socket.id });
+      socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
-
-    // Farbe vom Server bekommen
     socket.on('assign-color', color => {
       myColor = color;
       laserBtn.style.borderColor = myColor;
     });
 
-    // Gyro-Freigabe
+    // Freigabe
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
@@ -64,7 +65,7 @@
       }
     });
 
-    // Start Laser
+    // Start / Stop
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
@@ -72,20 +73,20 @@
       zeroB = lastBeta;
     }, { passive:false });
 
-    // Stop Laser
     laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
       drawing = false;
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    // Optimiertes Senden bei Bewegung
-    let lastSent = 0;
-    let lastX = 0, lastY = 0;
-
+    // Nur die Werte puffern
     window.addEventListener('deviceorientation', ev => {
       lastAlpha = ev.alpha;
       lastBeta = ev.beta;
+    });
+
+    // Sende-Loop
+    setInterval(() => {
       if (!drawing) return;
 
       let dA = lastAlpha - zeroA;
@@ -100,17 +101,15 @@
       const x = 1 - ((dA + maxHor) / (2 * maxHor));
       const y = 1 - ((dB + maxVer) / (2 * maxVer));
 
-      const now = Date.now();
-      const dx = Math.abs(x - lastX);
-      const dy = Math.abs(y - lastY);
+      const dx = Math.abs(x - lastSentX);
+      const dy = Math.abs(y - lastSentY);
 
-      if ((now - lastSent > 50) && (dx > 0.01 || dy > 0.01)) {
+      if (dx > 0.005 || dy > 0.005) {
         socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
-        lastSent = now;
-        lastX = x;
-        lastY = y;
+        lastSentX = x;
+        lastSentY = y;
       }
-    });
+    }, 50); // 20 fps max
   </script>
 </body>
 </html>
