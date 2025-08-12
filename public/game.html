@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (Paddle + robuste Maske)</title>
+  <title>Game Display mit Hindernissen (Paddle + Kantenfix)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
@@ -72,9 +72,12 @@
 
     // Masken-/Wandkollision
     const SOLID_IS_WHITE = true; // Weiß = Wand (verboten)
-    const WHITE_THR      = 220;
+    const WHITE_THR      = 230;  // 0..255
     const SAMPLE_POINTS  = 32;   // Umfangsabtastung
     const SUBSTEP_MAX    = 8;    // Integrations-Substeps
+    const BISECT_ITERS   = 8;    // Zeit-des-Kontakts
+    const SEP_BIAS       = 0.35; // minimale Abhebegeschwindigkeit entlang Normale (px/Frame)
+    const PUSH_EPS       = 1.0;  // kleine Trennung nach Kontakt (px)
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
@@ -125,15 +128,24 @@
     function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
     // ----------- Masken-Helfer -----------
-    function isSolidPixel(x,y){
-      if (x<0 || y<0 || x>=maskCanvas.width || y>=maskCanvas.height) return true; // offscreen = solid
+    function getRGB(x,y){
+      if (x<0 || y<0 || x>=maskCanvas.width || y>=maskCanvas.height) return [255,255,255];
       const d = maskCtx.getImageData(x|0, y|0, 1, 1).data;
+      return [d[0], d[1], d[2]];
+    }
+    function whiteness01At(x,y){
+      const [r,g,b] = getRGB(x,y);
+      return (r+g+b)/ (3*255);
+    }
+    function isSolidPixel(x,y){
+      const [r,g,b] = getRGB(x,y);
       if (SOLID_IS_WHITE) {
-        return (d[0] >= WHITE_THR && d[1] >= WHITE_THR && d[2] >= WHITE_THR);
+        return (r >= WHITE_THR && g >= WHITE_THR && b >= WHITE_THR);
       } else {
-        return (d[0] < WHITE_THR || d[1] < WHITE_THR || d[2] < WHITE_THR);
+        return (r < WHITE_THR || g < WHITE_THR || b < WHITE_THR);
       }
     }
+    // Umfangsprüfung: berührt der Kreis irgendwo „solid“?
     function circleTouchesSolid(x,y,r){
       const step = (Math.PI*2)/SAMPLE_POINTS;
       for (let i=0;i<SAMPLE_POINTS;i++){
@@ -144,28 +156,47 @@
       }
       return false;
     }
-    // Normale: zeigt **weg von Weiß (solid)** in den erlaubten Bereich!
-    function normalAwayFromSolid(x,y,r){
-      let sx=0, sy=0, cnt=0;
-      const step = (Math.PI*2)/SAMPLE_POINTS;
-      for (let i=0;i<SAMPLE_POINTS;i++){
-        const ang = i*step;
-        const px = Math.round(x + Math.cos(ang)*r);
-        const py = Math.round(y + Math.sin(ang)*r);
-        if (isSolidPixel(px,py)){ // Richtung zum SOLID-Punkt sammeln …
-          sx += Math.cos(ang);
-          sy += Math.sin(ang);
-          cnt++;
+    // Normale **weg von Weiß** via Sobel am Randpunkt (Fallback: Umfangsnormal)
+    function normalAwayFromWhite(contactX, contactY, approxNx, approxNy, r){
+      // Randpunkt näherungsweise am Kreisumfang
+      let bx = contactX + (approxNx||0) * r;
+      let by = contactY + (approxNy||0) * r;
+
+      // Sobel auf Whiteness in 3x3 um (bx,by)
+      const x = Math.round(bx), y = Math.round(by);
+      const w00 = whiteness01At(x-1,y-1), w01 = whiteness01At(x,y-1), w02 = whiteness01At(x+1,y-1);
+      const w10 = whiteness01At(x-1,y  ), w11 = whiteness01At(x,y  ), w12 = whiteness01At(x+1,y  );
+      const w20 = whiteness01At(x-1,y+1), w21 = whiteness01At(x,y+1), w22 = whiteness01At(x+1,y+1);
+
+      // Gradient Richtung „heller“ (weiß)
+      const gx = (-1*w00 + 1*w02) + (-2*w10 + 2*w12) + (-1*w20 + 1*w22);
+      const gy = (-1*w00 -2*w01 -1*w02) + ( 1*w20 + 2*w21 + 1*w22);
+
+      // Normale **weg von weiß** = -grad(whiteness)
+      let nx = -gx, ny = -gy;
+      let len = Math.hypot(nx,ny);
+
+      if (len < 1e-3) {
+        // Fallback: Umfangs-Summen-Normale (wie vorher)
+        let sx=0, sy=0, cnt=0;
+        const step = (Math.PI*2)/SAMPLE_POINTS;
+        for (let i=0;i<SAMPLE_POINTS;i++){
+          const ang = i*step;
+          const px = Math.round(contactX + Math.cos(ang)*r);
+          const py = Math.round(contactY + Math.sin(ang)*r);
+          if (isSolidPixel(px,py)){ sx += Math.cos(ang); sy += Math.sin(ang); cnt++; }
         }
+        if (cnt>0) { nx = -sx; ny = -sy; len = Math.hypot(nx,ny); }
       }
-      if (cnt === 0) return {nx:0, ny:0, cnt:0};
-      // … und **umkehren**, damit die Normale vom Weiß WEG zeigt.
-      let nx = -sx, ny = -sy;
-      const len = Math.hypot(nx,ny) || 1;
-      return { nx: nx/len, ny: ny/len, cnt };
+
+      if (len < 1e-6) {
+        // letzter Sicherheitsfallback: benutze angenäherte Normale
+        nx = approxNx || 0; ny = approxNy || 0; len = Math.hypot(nx,ny) || 1;
+      }
+      return { nx: nx/len, ny: ny/len };
     }
 
-    // Kreis vs. gedrehtes Rechteck (Paddle)
+    // ----------- Paddle: Kreis vs. gedrehtes Rechteck -----------
     function circleRectCollision(ballX, ballY, rectX, rectY, angle, halfLen, halfThick, radius){
       const ca = Math.cos(angle), sa = Math.sin(angle);
       const tx = ca,  ty = sa;   // Längsachse
@@ -173,8 +204,8 @@
       const rx = ballX - rectX, ry = ballY - rectY;
       const u = rx*tx + ry*ty;
       const v = rx*nx + ry*ny;
-      const cu = clamp(u, -halfLen, halfLen);
-      const cv = clamp(v, -halfThick, halfThick);
+      const cu = Math.max(-halfLen, Math.min(halfLen, u));
+      const cv = Math.max(-halfThick, Math.min(halfThick, v));
       const du = u - cu, dv = v - cv;
       const dist2 = du*du + dv*dv;
       if (dist2 > radius*radius) return null;
@@ -234,12 +265,13 @@
             ball.vx += impulse * nwx;
             ball.vy += impulse * nwy;
 
-            const twx = -nwy, twy = nwx;             // Tangente
+            // Spin aus Tangente
+            const twx = -nwy, twy = nwx;
             const vRelT = rvx*twx + rvy*twy;
             ball.angularVelocity += (-vRelT) * SPIN_K;
           }
 
-          // kleine Positionskorrektur aus dem Paddle heraus
+          // aus dem Paddle heraus
           ball.x += nwx * (penetration + SLOP_PADDLE);
           ball.y += nwy * (penetration + SLOP_PADDLE);
 
@@ -247,15 +279,14 @@
         }
       }
 
-      // ---------- Integration mit Substeps + Bisection gegen die Maske ----------
-      // Schrittweise Integration, um Tunneln zu vermeiden.
-      let remainingX = ball.vx * dt;
-      let remainingY = ball.vy * dt;
-      let substeps = Math.ceil(Math.hypot(remainingX, remainingY) / (ball.r * 0.5));
+      // ---------- Integration + robuste Masken-Kante ----------
+      let moveX = ball.vx * dt;
+      let moveY = ball.vy * dt;
+      let substeps = Math.ceil(Math.hypot(moveX, moveY) / (ball.r * 0.5));
       substeps = clamp(substeps, 1, SUBSTEP_MAX);
 
-      const stepX = remainingX / substeps;
-      const stepY = remainingY / substeps;
+      const stepX = moveX / substeps;
+      const stepY = moveY / substeps;
 
       for (let s=0; s<substeps; s++){
         const startX = ball.x, startY = ball.y;
@@ -264,34 +295,45 @@
 
         if (!circleTouchesSolid(targetX, targetY, ball.r)) {
           ball.x = targetX; ball.y = targetY;
-        } else {
-          // Zeit des Kontakts via Bisection in [0,1]
-          let lo = 0, hi = 1;
-          for (let i=0;i<8;i++){
-            const mid = (lo+hi)/2;
-            const mx = startX + stepX*mid;
-            const my = startY + stepY*mid;
-            if (circleTouchesSolid(mx, my, ball.r)) hi = mid; else lo = mid;
-          }
-          // an die erlaubte Seite gehen
-          ball.x = startX + stepX*lo;
-          ball.y = startY + stepY*lo;
+          continue;
+        }
 
-          // Normale weg von Weiß (solid) bestimmen und sanft separieren
-          const {nx, ny} = normalAwayFromSolid(ball.x, ball.y, ball.r);
-          if (nx !== 0 || ny !== 0) {
-            // minimale Separation, um an der Grenze klebefrei zu bleiben
-            ball.x += nx * 0.8;
-            ball.y += ny * 0.8;
+        // Zeit des Kontakts via Bisection auf [0,1]
+        let lo = 0, hi = 1;
+        for (let i=0;i<BISECT_ITERS;i++){
+          const mid = (lo+hi)/2;
+          const mx = startX + stepX*mid;
+          const my = startY + stepY*mid;
+          if (circleTouchesSolid(mx, my, ball.r)) hi = mid; else lo = mid;
+        }
+        // an erlaubte Seite setzen
+        ball.x = startX + stepX*lo;
+        ball.y = startY + stepY*lo;
 
-            // Geschwindigkeit an der Wand reflektieren (nur wenn wir in die Wand laufen)
-            const vDotN = ball.vx*nx + ball.vy*ny;
-            if (vDotN < 0) {
-              const e = 0.5; // Wand-Dämpfung
-              ball.vx -= (1+e) * vDotN * nx;
-              ball.vy -= (1+e) * vDotN * ny;
-            }
-          }
+        // Grobe Normale über Umfang, dann präzise Sobel-Normale am Rand
+        let sx=0, sy=0, cnt=0, step = (Math.PI*2)/SAMPLE_POINTS;
+        for (let i=0;i<SAMPLE_POINTS;i++){
+          const ang = i*step;
+          const px = Math.round(ball.x + Math.cos(ang)*ball.r);
+          const py = Math.round(ball.y + Math.sin(ang)*ball.r);
+          if (isSolidPixel(px,py)){ sx += Math.cos(ang); sy += Math.sin(ang); cnt++; }
+        }
+        let approxNx = cnt? -sx/Math.hypot(sx,sy) : 0;
+        let approxNy = cnt? -sy/Math.hypot(sx,sy) : 0;
+
+        const { nx, ny } = normalAwayFromWhite(ball.x, ball.y, approxNx, approxNy, ball.r);
+
+        // minimal nach außen schieben
+        ball.x += nx * PUSH_EPS;
+        ball.y += ny * PUSH_EPS;
+
+        // Geschwindigkeit so anpassen, dass wir **weg** von weiß gehen
+        let vDotN = ball.vx*nx + ball.vy*ny;
+        if (vDotN < SEP_BIAS) {
+          // Anteil zur Erreichung von SEP_BIAS addieren
+          const add = (SEP_BIAS - vDotN);
+          ball.vx += add * nx;
+          ball.vy += add * ny;
         }
       }
 
