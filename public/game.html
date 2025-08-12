@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.18 – Paddle)</title>
+  <title>Game Display mit Hindernissen (v1.18 – Paddle, softer bounce)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -13,14 +13,11 @@
       position:absolute; top:10px; left:10px;
       color:#fff; opacity:0.6; font-size:0.9em;
     }
-    canvas {
-      /* exakt wie im Original: keine Viewport-Skalierung, kein Stretching */
-      display:block; margin:0 auto; background:#000;
-    }
+    canvas { display:block; }
   </style>
 </head>
 <body>
-  <div id="version">v1.18 Game (Paddle)</div>
+  <div id="version"></div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -46,13 +43,12 @@
     ballShadow.src = '/ball-shadow.png';
 
     let loaded=0;
-    [bgImage, maskImage].forEach(img=>{
+    ;[bgImage, maskImage].forEach(img=>{
       img.onload = ()=>{
         if (++loaded === 2) {
-          // Original: Canvas exakt auf Masken-Größe, Bild mittig gezeichnet
           canvas.width  = maskImage.width;
           canvas.height = maskImage.height;
-          maskCanvas    = document.createElement('canvas');
+          maskCanvas = document.createElement('canvas');
           maskCanvas.width  = maskImage.width;
           maskCanvas.height = maskImage.height;
           maskCtx = maskCanvas.getContext('2d');
@@ -69,11 +65,13 @@
           BOUNCE_WALL      = 0.8,
           PTR_TTL          = 500;
 
-    // Paddle-Parameter (Balken)
-    const PADDLE_LEN   = 120;   // Gesamtlänge in px
-    const PADDLE_THICK = 14;    // Dicke in px
-    const RESTITUTION  = 1.0;   // „Bounciness“ am Paddle (1 = elastisch)
-    const SLOP         = 0.5;   // kleine Positionskorrektur gegen „Kleben“
+    // Paddle-Parameter – sanfteres Abprallen
+    const PADDLE_LEN   = 120;
+    const PADDLE_THICK = 14;
+    const RESTITUTION  = 0.65;   // vorher 1.0 → jetzt gedämpfter
+    const MAX_REL_N    = 900;    // max. berücksichtigte rel. Normalgeschw. (px/s)
+    const SPIN_K       = 0.0006; // weniger Spin
+    const SLOP         = 0.2;    // kleinere Positionskorrektur
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
@@ -82,80 +80,45 @@
     const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIndex=0;
 
-    // Neu: rot (Rotation in Radiant) mitschicken und glätten
     socket.on('draw', ({x,y,rot,deviceId,color})=>{
       if (!canvas.width) return;
       const now  = performance.now();
       const rawX = x * canvas.width, rawY = y * canvas.height;
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
-
       const prev = pointers[deviceId];
       if (prev) {
         const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
         const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
-        // Winkel sanft glätten (Shortest-path Wrap)
         const rotPrev = prev.rot ?? 0;
-        let d = rot - rotPrev;
-        d = ((d + Math.PI) % (2*Math.PI)) - Math.PI; // in [-π, π]
+        let d = (rot ?? 0) - rotPrev; d = ((d + Math.PI) % (2*Math.PI)) - Math.PI;
         const rotSmoothed = rotPrev + d*(1-smoothing);
-
-        pointers[deviceId] = {
-          sx, sy,
-          px: prev.sx, py: prev.sy,
-          rot: rotSmoothed,
-          prot: prev.rot ?? rotSmoothed,
-          t: now, pt: prev.pt
-        };
+        pointers[deviceId] = { sx,sy, px:prev.sx, py:prev.sy, rot: rotSmoothed, prot: prev.rot ?? rotSmoothed, t:now, pt:prev.pt };
       } else {
-        pointers[deviceId] = {
-          sx: rawX, sy: rawY, px: rawX, py: rawY,
-          rot: rot || 0, prot: rot || 0,
-          t: now, pt: now
-        };
+        pointers[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, rot: rot || 0, prot: rot || 0, t:now, pt:now };
       }
     });
-
     socket.on('draw-end', ({deviceId})=> delete pointers[deviceId]);
     socket.on('settings', data=> smoothing = data.smoothing);
 
-    function cleanup(now){
-      for(let id in pointers){
-        if(now - pointers[id].t > PTR_TTL) delete pointers[id];
-      }
-    }
+    function cleanup(now){ for(let id in pointers){ if(now - pointers[id].t > PTR_TTL) delete pointers[id]; } }
+    function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-    // Hilfen für Paddle-Kollision
-    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
-
-    // Kreis–Rechteck (gedreht) Kontakt-Test (Minkowski via „nächster Punkt“):
-    // Gibt Normalenvektor n (Weltkoords), Kontaktpunkt-Offset (cu,cv) in Paddle-Koords
-    // und Durchdringungstiefe zurück – oder null.
     function circleRectCollision(ballX, ballY, rectX, rectY, angle, halfLen, halfThick, radius){
       const ca = Math.cos(angle), sa = Math.sin(angle);
-      // Paddle-Achsen: t = Längs, n = Normal (nach „oben“ des Balkens)
-      const tx = ca,  ty = sa;
-      const nx = -sa, ny = ca;
-
-      // Ball in Paddle-Koords
-      const rx = ballX - rectX;
-      const ry = ballY - rectY;
-      const u = rx*tx + ry*ty; // entlang Länge
-      const v = rx*nx + ry*ny; // entlang Dicke
-
-      // nächster Punkt auf dem Rechteck in Koords
+      const tx = ca,  ty = sa;   // Längsachse
+      const nx = -sa, ny = ca;   // Normalachse
+      const rx = ballX - rectX, ry = ballY - rectY;
+      const u = rx*tx + ry*ty;
+      const v = rx*nx + ry*ny;
       const cu = clamp(u, -halfLen, halfLen);
       const cv = clamp(v, -halfThick, halfThick);
-
       const du = u - cu, dv = v - cv;
       const dist2 = du*du + dv*dv;
       if (dist2 > radius*radius) return null;
-
       const dist = Math.sqrt(dist2) || 1;
-      // Normal in Weltkoords
       const nwx = (du*tx + dv*nx) / dist;
       const nwy = (du*ty + dv*ny) / dist;
-
       return { nwx, nwy, cu, cv, penetration: radius - dist, tx, ty, nx, ny };
     }
 
@@ -169,69 +132,42 @@
         const dx = p.sx - p.px, dy = p.sy - p.py;
         const dtMs = Math.max(p.t - p.pt, 1);
 
-        // nächster Punkt des Paddle-Zentrums zum Ball entlang des Bewegungssegments
-        // (verhindert „Tunneln“ des Zentrums)
-        const abx = dx, aby = dy;
-        const ab2 = abx*abx + aby*aby;
+        // nächster Punkt auf dem Weg des Paddle-Zentrums
+        const abx = dx, aby = dy; const ab2 = abx*abx + aby*aby;
         let cpX = p.sx, cpY = p.sy, lerpT = 1;
-        if (ab2 > 0){
-          const apx = ball.x - p.px, apy = ball.y - p.py;
-          let t = (apx*abx + apy*aby) / ab2; t = clamp(t, 0, 1);
-          cpX = p.px + abx*t; cpY = p.py + aby*t; lerpT = t;
-        }
-
-        // Winkel interpolieren entlang des Weges
-        let dAng = (p.rot - p.prot);
-        dAng = ((dAng + Math.PI) % (2*Math.PI)) - Math.PI;
+        if (ab2 > 0){ const apx = ball.x - p.px, apy = ball.y - p.py; let t = (apx*abx + apy*aby) / ab2; t = clamp(t,0,1); cpX = p.px + abx*t; cpY = p.py + aby*t; lerpT = t; }
+        let dAng = (p.rot - p.prot); dAng = ((dAng + Math.PI) % (2*Math.PI)) - Math.PI;
         const angAtCp = p.prot + dAng * lerpT;
 
-        const halfLen   = PADDLE_LEN * 0.5;
-        const halfThick = PADDLE_THICK * 0.5;
-
-        const hit = circleRectCollision(
-          ball.x, ball.y, cpX, cpY, angAtCp, halfLen, halfThick, ball.r
-        );
-
+        const halfLen = PADDLE_LEN*0.5, halfThick = PADDLE_THICK*0.5;
+        const hit = circleRectCollision(ball.x, ball.y, cpX, cpY, angAtCp, halfLen, halfThick, ball.r);
         if (hit){
           const { nwx, nwy, cu, cv, tx, ty, nx, ny, penetration } = hit;
+          const vxC = dx / dtMs * 1000, vyC = dy / dtMs * 1000;
+          const rpx = tx*cu + nx*cv, rpy = ty*cu + ny*cv;
+          const angVel = dAng / dtMs * 1000;
+          const vxR = -angVel * rpy, vyR =  angVel * rpx;
+          const vxP = vxC + vxR,    vyP = vyC + vyR;
 
-          // Geschwindigkeit des Paddle-Kontaktpunkts (Zentrum + Rotation)
-          const vxC = dx / dtMs * 1000;
-          const vyC = dy / dtMs * 1000;
-
-          const rpx = tx*cu + nx*cv;  // Kontaktpunkt relativ zum Zentrum (Welt)
-          const rpy = ty*cu + ny*cv;
-
-          const angVel = dAng / dtMs * 1000; // rad/s
-          const vxR = -angVel * rpy;         // ( -ωy, +ωx )
-          const vyR =  angVel * rpx;
-
-          const vxP = vxC + vxR;
-          const vyP = vyC + vyR;
-
-          // Relative Geschwindigkeit des Balls zum Kontaktpunkt
-          const rvx = ball.vx - vxP;
-          const rvy = ball.vy - vyP;
-
-          const vRelN = rvx*nwx + rvy*nwy; // <0 = Annäherung
+          const rvx = ball.vx - vxP, rvy = ball.vy - vyP;
+          let vRelN = rvx*nwx + rvy*nwy; // <0 = Annäherung
           if (vRelN < 0){
-            // Reflexion am bewegten „unendlichen“ Paddle:
-            // v' = v - (1+e) * ( (v - vP)·n ) * n
+            // clamp Relativ-Normalgeschwindigkeit → weniger „Wegfliegen“
+            vRelN = Math.max(vRelN, -MAX_REL_N);
             const impulse = -(1+RESTITUTION) * vRelN;
             ball.vx += impulse * nwx;
             ball.vy += impulse * nwy;
 
-            // etwas Spin aus tangentialem Relativanteil
-            const twx = -nwy, twy = nwx; // Tangente am Kontakt
+            // weichere Spin-Kopplung
+            const twx = -nwy, twy = nwx;
             const vRelT = rvx*twx + rvy*twy;
-            ball.angularVelocity += (-vRelT) * 0.0012;
+            ball.angularVelocity += (-vRelT) * SPIN_K;
           }
 
-          // Positionskorrektur leicht aus der Oberfläche heraus
+          // kleinere Positionskorrektur
           ball.x += nwx * (penetration + SLOP);
           ball.y += nwy * (penetration + SLOP);
 
-          // dieses Segment „verbraucht“
           p.pt = p.t;
         }
       }
@@ -250,82 +186,51 @@
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
           const d = maskCtx.getImageData(ex,ey,1,1).data;
           if(d[0]<200 || d[1]<200 || d[2]<200){
-            const nx = Math.cos(ang);
-            const ny = Math.sin(ang);
-            correctionX += nx;
-            correctionY += ny;
-            hitCount++;
+            const nx = Math.cos(ang); const ny = Math.sin(ang);
+            correctionX += nx; correctionY += ny; hitCount++;
           }
         }
       }
-
       if (hitCount > 0) {
-        correctionX /= hitCount;
-        correctionY /= hitCount;
+        correctionX /= hitCount; correctionY /= hitCount;
         const vDotN = ball.vx*correctionX + ball.vy*correctionY;
-        ball.vx -= 2*vDotN*correctionX;
-        ball.vy -= 2*vDotN*correctionY;
-        ball.x += correctionX * 2;
-        ball.y += correctionY * 2;
+        ball.vx -= 2*vDotN*correctionX; ball.vy -= 2*vDotN*correctionY;
+        ball.x += correctionX * 2; ball.y += correctionY * 2;
       }
 
-      // Ränder (Original)
+      // Ränder
       if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
       if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
       if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
       if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
 
-      ball.vx *= FRICTION;
-      ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
+      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
     function draw(){
-      // Hintergrund exakt wie vorher: Bild mittig, keine Skalierung
       if(bgImage.complete){
         const bx=(canvas.width-bgImage.width)/2;
         const by=(canvas.height-bgImage.height)/2;
         ctx.drawImage(bgImage,bx,by);
       } else ctx.clearRect(0,0,canvas.width,canvas.height);
 
-      // leichter Schlagschatten unter dem Ball
+      // Schatten unter Ball
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-      ctx.shadowBlur = 15;
-      ctx.shadowOffsetX = -15;
-      ctx.shadowOffsetY = 15;
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,0,0,1)';
-      ctx.fill();
-      ctx.restore();
+      ctx.shadowBlur = 15; ctx.shadowOffsetX = -15; ctx.shadowOffsetY = 15;
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+      ctx.fillStyle = 'rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
 
-      // Ball-Grafik (Original-Skalierung per Radius)
-      if(ballBase.complete){
-        ctx.save();
-        ctx.translate(ball.x,ball.y);
-        ctx.rotate(ball.angle);
-        ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
-        ctx.restore();
-      }
-      if(ballShadow.complete){
-        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
-      }
+      if(ballBase.complete){ ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle); ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore(); }
+      if(ballShadow.complete){ ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2); }
 
-      // Paddle zeichnen (statt Kreis)
+      // Paddle zeichnen
       for(let id in pointers){
-        const p = pointers[id];
-        const col = deviceColors[id] || '#fff';
-        ctx.save();
-        ctx.translate(p.sx, p.sy);
-        ctx.rotate(p.rot || 0);
+        const p = pointers[id]; const col = deviceColors[id] || '#fff';
+        ctx.save(); ctx.translate(p.sx, p.sy); ctx.rotate(p.rot || 0);
         ctx.fillStyle = col;
-        ctx.beginPath();
-        ctx.roundRect?.(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK, PADDLE_THICK/2);
-        if (!ctx.roundRect) {
-          ctx.rect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK);
-        }
-        ctx.fill();
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK, PADDLE_THICK/2); ctx.fill(); }
+        else { ctx.fillRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK); }
         ctx.restore();
       }
     }
@@ -333,9 +238,7 @@
     let last=performance.now();
     (function loop(now){
       const dt=(now-last)/16.67; last=now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
+      update(dt); draw(); requestAnimationFrame(loop);
     })(last);
   </script>
 </body>
