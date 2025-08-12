@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.18 – collision fix)</title>
+  <title>Game Display mit Hindernissen (v1.17 → v1.18-minimal collision)</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
@@ -14,7 +14,8 @@
       color:#fff; opacity:0.6; font-size:0.9em;
     }
     canvas {
-      display:block; width:100vw; height:100vh;
+      display:block;
+      width:100vw; height:100vh;
     }
   </style>
 </head>
@@ -44,44 +45,22 @@
     ballBase.src   = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    let loaded = 0;
-    const needed = 4; // bg, mask, ballBase, ballShadow
-
-    function tryInit(){
-      loaded++;
-      if (loaded >= needed) init();
-    }
-
-    bgImage.onload    = tryInit;
-    maskImage.onload  = tryInit;
-    ballBase.onload   = tryInit;
-    ballShadow.onload = tryInit;
-
-    function fitCanvas(){
-      const dpr = window.devicePixelRatio || 1;
-      const w = Math.floor(window.innerWidth  * dpr);
-      const h = Math.floor(window.innerHeight * dpr);
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w; canvas.height = h;
-        ctx.setTransform(1,0,0,1,0,0);
-        ctx.scale(dpr, dpr);
-        buildMask();
-      }
-    }
-
-    function buildMask(){
-      // zentriere das Maskenbild auf der Canvas
-      maskCanvas = document.createElement('canvas');
-      maskCanvas.width  = canvas.width;
-      maskCanvas.height = canvas.height;
-      maskCtx = maskCanvas.getContext('2d');
-      maskCtx.clearRect(0,0,maskCanvas.width, maskCanvas.height);
-      const bx=(canvas.width - bgImage.width)/2;
-      const by=(canvas.height- bgImage.height)/2;
-      maskCtx.drawImage(maskImage,bx,by);
-    }
-
-    window.addEventListener('resize', fitCanvas);
+    let loaded=0;
+    [bgImage, maskImage].forEach(img=>{
+      img.onload = ()=>{
+        if (++loaded === 2) {
+          canvas.width  = maskImage.width;
+          canvas.height = maskImage.height;
+          maskCanvas = document.createElement('canvas');
+          maskCanvas.width  = maskImage.width;
+          maskCanvas.height = maskImage.height;
+          maskCtx = maskCanvas.getContext('2d');
+          maskCtx.drawImage(maskImage,0,0);
+          ball.x = canvas.width/2;
+          ball.y = canvas.height/2;
+        }
+      };
+    });
 
     let smoothing = 0.5;
     const FRICTION         = 0.995,
@@ -91,9 +70,6 @@
           SPEED_SCALE      = 0.0002,
           PTR_TTL          = 500,
           PTR_R            = 16;
-
-    // Physik: kleinerer Trefferradius verhindert "Magnet"-Effekt
-    const PTR_HIT_R = 12;
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
@@ -143,39 +119,42 @@
       for(let id in pointers){
         const p = pointers[id];
         const dx = p.sx - p.px, dy = p.sy - p.py;
-        const dtMs = Math.max(p.t - p.pt, 1);
+        const segLen = Math.hypot(dx,dy);
+        const hitRadius = ball.r * 1.1 + PTR_R;
 
-        // Nächster Punkt des Pointer-Segments (px,py -> sx,sy) zur Ballmitte
-        const cp = closestPointOnSegment(p.px, p.py, p.sx, p.sy, ball.x, ball.y);
-        const toBallX = ball.x - cp.x, toBallY = ball.y - cp.y;
-        const dist = Math.hypot(toBallX, toBallY);
-        const R = ball.r * 1.05 + PTR_HIT_R;
+        {
+          const dtMs = Math.max(p.t - p.pt, 1);
 
-        if (dist <= R) {
-          // Kollisionsnormale (Segment -> Ball)
-          let nx = toBallX / (dist || 1);
-          let ny = toBallY / (dist || 1);
+          // Nächster Punkt des Pointer-Segments (px,py -> sx,sy) zur Ballmitte
+          const cp = closestPointOnSegment(p.px, p.py, p.sx, p.sy, ball.x, ball.y);
+          const toBallX = ball.x - cp.x, toBallY = ball.y - cp.y;
+          const dist = Math.hypot(toBallX, toBallY);
+          const R = hitRadius;
 
-          // Normale Pointergeschwindigkeit in px/s (nur Annäherung > 0 zählt)
-          const vpn = ((dx * nx + dy * ny) / dtMs) * 1000;
-          if (vpn > 0) {
-            const strength = BASE_STRENGTH + vpn * SPEED_SCALE;
-            ball.vx += nx * strength;
-            ball.vy += ny * strength;
+          if (dist <= R) {
+            // Kollisionsnormale (Segment -> Ball)
+            let nx = toBallX / (dist || 1);
+            let ny = toBallY / (dist || 1);
 
-            // Spin aus tangentialem Anteil
-            const vpt = ((dx * -ny + dy * nx) / dtMs) * 1000;
-            ball.angularVelocity += vpt * 0.0008;
+            // Nur Impuls, wenn der Pointer sich annähert
+            const vpn = ((dx * nx + dy * ny) / dtMs) * 1000;  // px/s in Normalrichtung
+            if (vpn > 0) {
+              const speed = segLen * 1000 / dtMs;
+              const strength = BASE_STRENGTH + speed * SPEED_SCALE;
+
+              ball.vx += nx * strength;
+              ball.vy += ny * strength;
+
+              // Spin ähnlich wie zuvor – mit Kontaktpunkt statt Samplepunkt
+              const rx = cp.x - ball.x;
+              const ry = cp.y - ball.y;
+              const tx = -ny, ty = nx;
+              ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+            }
+
+            // Dieses Segment ist „verbraucht“
+            p.pt = p.t;
           }
-
-          // Positionskorrektur (Penetration + kleiner Slop), damit nichts hängen bleibt
-          const penetration = R - dist;
-          const SLOP = 0.5;
-          ball.x += nx * (penetration + SLOP);
-          ball.y += ny * (penetration + SLOP);
-
-          // Doppelimpulse mit demselben Segment vermeiden
-          p.pt = p.t;
         }
       }
 
@@ -244,41 +223,30 @@ ctx.restore();
         ctx.save();
         ctx.translate(ball.x,ball.y);
         ctx.rotate(ball.angle);
-        ctx.drawImage(ballBase,-ballBase.width/2,-ballBase.height/2);
+        ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
         ctx.restore();
       }
 
-      // draw pointers
+      if(ballShadow.complete){
+        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
+      }
+
       for(let id in pointers){
-        const p = pointers[id];
-        const col = deviceColors[id] || '#fff';
+        const p=pointers[id];
+        ctx.fillStyle=deviceColors[id];
         ctx.beginPath();
-        ctx.arc(p.sx, p.sy, PTR_R, 0, Math.PI*2);
-        ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(p.px,p.py); ctx.lineTo(p.sx,p.sy);
-        ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.stroke();
+        ctx.arc(p.sx,p.sy,PTR_R,0,2*Math.PI);
+        ctx.fill();
       }
     }
 
-    function init(){
-      fitCanvas();
-      const bx=(canvas.width-bgImage.width)/2;
-      const by=(canvas.height-bgImage.height)/2;
-
-      // Startposition des Balls auf weißer Fläche
-      ball.x = bx + bgImage.width*0.3;
-      ball.y = by + bgImage.height*0.3;
-
-      document.getElementById('version').textContent = 'Display '+(new Date()).toLocaleTimeString();
-
-      let last = performance.now();
-      (function loop(now){
-        const dt=(now-last)/16.67; last=now;
-        update(dt);
-        draw();
-        requestAnimationFrame(loop);
-      })(last);
-    }
+    let last=performance.now();
+    (function loop(now){
+      const dt=(now-last)/16.67; last=now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    })(last);
   </script>
 </body>
 </html>
