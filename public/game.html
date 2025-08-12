@@ -3,16 +3,10 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (Paddle + robuste Maskenkollision)</title>
+  <title>Game Display mit Hindernissen (Paddle + robuste Maske)</title>
   <style>
-    html, body {
-      margin:0; padding:0; width:100%; height:100%;
-      background:#000; overflow:hidden;
-    }
-    #version {
-      position:absolute; top:10px; left:10px;
-      color:#fff; opacity:0.6; font-size:0.9em;
-    }
+    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
     canvas { display:block; }
   </style>
 </head>
@@ -28,14 +22,14 @@
       socket.emit('request-settings');
     });
 
-    const canvas = document.getElementById('gameCanvas'),
-          ctx    = canvas.getContext('2d');
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
     let maskCanvas, maskCtx;
 
-    const bgImage    = new Image(),
-          maskImage  = new Image(),
-          ballBase   = new Image(),
-          ballShadow = new Image();
+    const bgImage    = new Image();
+    const maskImage  = new Image();
+    const ballBase   = new Image();
+    const ballShadow = new Image();
 
     bgImage.src    = '/background.png';
     maskImage.src  = '/mask.png';
@@ -46,7 +40,7 @@
     [bgImage, maskImage].forEach(img=>{
       img.onload = ()=>{
         if (++loaded === 2) {
-          // exakt wie Original: Canvas = Maskengröße, BG mittig gezeichnet
+          // exakt wie Original: Canvas = Maskengröße, BG später mittig gezeichnet
           canvas.width  = maskImage.width;
           canvas.height = maskImage.height;
 
@@ -65,22 +59,22 @@
     let smoothing = 0.5;
     const FRICTION         = 0.995;
     const ANGULAR_FRICTION = 0.95;
-    const BOUNCE_WALL      = 0.8;
+    const BOUNCE_WALL      = 0.75; // Rand
     const PTR_TTL          = 500;
 
-    // Paddle-Parameter (ruhiger, kontrolliert)
+    // Paddle-Parameter (ruhig & kontrolliert)
     const PADDLE_LEN   = 120;
     const PADDLE_THICK = 14;
-    const RESTITUTION  = 0.55;   // Reflexion am Paddle
-    const MAX_REL_N_FR = 12;     // Clamp rel. Normalgeschw. (px/Frame)
-    const SPIN_K       = 0.0005; // Spin-Kopplung
-    const SLOP         = 0.2;    // kleine Pos.-Korrektur
+    const RESTITUTION  = 0.55;   // Reflexion am Paddle (px/Frame)
+    const MAX_REL_N_FR = 12;     // Clamp der rel. Normalgeschw. (px/Frame)
+    const SPIN_K       = 0.0005;
+    const SLOP_PADDLE  = 0.2;
 
-    // Masken-Kollision
-    const SOLID_IS_WHITE = true;       // <— Weiß ist Wand/solid
-    const SAMPLE_POINTS  = 24;         // Umfangsabtastung
-    const WHITE_THR      = 220;        // Weiß-Schwelle (Anti-Aliasing-Puffer)
-    const SUBSTEP_MAX    = 8;          // max. Integrations-Substeps pro Frame
+    // Masken-/Wandkollision
+    const SOLID_IS_WHITE = true; // Weiß = Wand (verboten)
+    const WHITE_THR      = 220;
+    const SAMPLE_POINTS  = 32;   // Umfangsabtastung
+    const SUBSTEP_MAX    = 8;    // Integrations-Substeps
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
@@ -92,7 +86,8 @@
     socket.on('draw', ({x,y,rot,deviceId,color})=>{
       if (!canvas.width) return;
       const now  = performance.now();
-      const rawX = x * canvas.width, rawY = y * canvas.height;
+      const rawX = x * canvas.width;
+      const rawY = y * canvas.height;
 
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
@@ -101,8 +96,9 @@
       if (prev) {
         const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
         const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
+
         const rotPrev = prev.rot ?? 0;
-        let d = (rot ?? 0) - rotPrev; d = ((d + Math.PI) % (2*Math.PI)) - Math.PI; // shortest
+        let d = (rot ?? 0) - rotPrev; d = ((d + Math.PI) % (2*Math.PI)) - Math.PI; // shortest wrap
         const rotSmoothed = rotPrev + d*(1-smoothing);
 
         pointers[deviceId] = {
@@ -122,13 +118,13 @@
     socket.on('settings', data=> smoothing = data.smoothing);
 
     function cleanup(now){
-      for(let id in pointers){
-        if(now - pointers[id].t > PTR_TTL) delete pointers[id];
+      for (let id in pointers){
+        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
       }
     }
     function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
 
-    // ---------- Masken-Helfer ----------
+    // ----------- Masken-Helfer -----------
     function isSolidPixel(x,y){
       if (x<0 || y<0 || x>=maskCanvas.width || y>=maskCanvas.height) return true; // offscreen = solid
       const d = maskCtx.getImageData(x|0, y|0, 1, 1).data;
@@ -138,8 +134,6 @@
         return (d[0] < WHITE_THR || d[1] < WHITE_THR || d[2] < WHITE_THR);
       }
     }
-
-    // check: berührt der Kreis (ball.x/y, r) irgendwo Solid?
     function circleTouchesSolid(x,y,r){
       const step = (Math.PI*2)/SAMPLE_POINTS;
       for (let i=0;i<SAMPLE_POINTS;i++){
@@ -150,22 +144,23 @@
       }
       return false;
     }
-
-    // Korrekturvektor (Summe der „Wandnormalen“)
-    function correctionNormal(x,y,r){
-      let nx=0, ny=0, cnt=0;
+    // Normale: zeigt **weg von Weiß (solid)** in den erlaubten Bereich!
+    function normalAwayFromSolid(x,y,r){
+      let sx=0, sy=0, cnt=0;
       const step = (Math.PI*2)/SAMPLE_POINTS;
       for (let i=0;i<SAMPLE_POINTS;i++){
         const ang = i*step;
-        const cx = Math.round(x + Math.cos(ang)*r);
-        const cy = Math.round(y + Math.sin(ang)*r);
-        if (isSolidPixel(cx,cy)){
-          nx += Math.cos(ang);
-          ny += Math.sin(ang);
+        const px = Math.round(x + Math.cos(ang)*r);
+        const py = Math.round(y + Math.sin(ang)*r);
+        if (isSolidPixel(px,py)){ // Richtung zum SOLID-Punkt sammeln …
+          sx += Math.cos(ang);
+          sy += Math.sin(ang);
           cnt++;
         }
       }
       if (cnt === 0) return {nx:0, ny:0, cnt:0};
+      // … und **umkehren**, damit die Normale vom Weiß WEG zeigt.
+      let nx = -sx, ny = -sy;
       const len = Math.hypot(nx,ny) || 1;
       return { nx: nx/len, ny: ny/len, cnt };
     }
@@ -193,13 +188,13 @@
       if(!maskCtx) return;
       cleanup(performance.now());
 
-      // ---------- Paddle-Kollision (Einheiten in px/Frame) ----------
+      // ---------- Paddle-Kollision (px/Frame) ----------
       for(let id in pointers){
         const p = pointers[id];
-        const dx = p.sx - p.px, dy = p.sy - p.py;
+        const dx = p.sx - p.px, dy = p.sy - p.py; // px/Frame
         const dtMs = Math.max(p.t - p.pt, 1);
 
-        // „closest approach“ des Paddle-Zentrums
+        // „closest approach“ des Paddle-Zentrums auf seinem Weg px→sx
         const abx = dx, aby = dy; const ab2 = abx*abx + aby*aby;
         let cpX = p.sx, cpY = p.sy, lerpT = 1;
         if (ab2 > 0){
@@ -207,7 +202,7 @@
           let t = (apx*abx + apy*aby) / ab2; t = clamp(t,0,1);
           cpX = p.px + abx*t; cpY = p.py + aby*t; lerpT = t;
         }
-        // Winkel entlang des Weges (shortest wrap)
+        // Winkel entlang des Weges (shortest)
         let dAng = (p.rot - p.prot); dAng = ((dAng + Math.PI) % (2*Math.PI)) - Math.PI;
         const angAtCp = p.prot + dAng * lerpT;
 
@@ -218,67 +213,84 @@
         if (hit){
           const { nwx, nwy, cu, cv, tx, ty, nx, ny, penetration } = hit;
 
-          // Paddle-Kontaktpunkt-Geschwindigkeit in px/Frame
-          const vCenterX_fr = dx;                 // px/Frame
-          const vCenterY_fr = dy;                 // px/Frame
+          // Kontaktpunktgeschwindigkeit (px/Frame): Zentrum + Rotation
+          const vCenterX_fr = dx;
+          const vCenterY_fr = dy;
           const rpx = tx*cu + nx*cv, rpy = ty*cu + ny*cv;
-          const angVel_fr = dAng;                 // rad/Frame
-          const vRotX_fr  = -angVel_fr * rpy;     // px/Frame
-          const vRotY_fr  =  angVel_fr * rpx;     // px/Frame
+          const angVel_fr = dAng;            // rad/Frame
+          const vRotX_fr  = -angVel_fr * rpy;
+          const vRotY_fr  =  angVel_fr * rpx;
           const vPx = vCenterX_fr + vRotX_fr;
           const vPy = vCenterY_fr + vRotY_fr;
 
-          // relative Geschwindigkeit (alles px/Frame!)
+          // relative Geschwindigkeit (px/Frame)
           const rvx = ball.vx - vPx;
           const rvy = ball.vy - vPy;
 
-          let vRelN = rvx*nwx + rvy*nwy;      // <0 = Annäherung
+          let vRelN = rvx*nwx + rvy*nwy; // <0 = Annäherung
           if (vRelN < 0){
-            vRelN = Math.max(vRelN, -MAX_REL_N_FR);     // „Kanonen“-Clamping
-            const impulse = -(1 + RESTITUTION) * vRelN; // elastische Reflexion
+            vRelN = Math.max(vRelN, -MAX_REL_N_FR);   // kein „Kanonen“-Effekt
+            const impulse = -(1 + RESTITUTION) * vRelN;
             ball.vx += impulse * nwx;
             ball.vy += impulse * nwy;
 
-            const twx = -nwy, twy = nwx;                // Tangente
+            const twx = -nwy, twy = nwx;             // Tangente
             const vRelT = rvx*twx + rvy*twy;
             ball.angularVelocity += (-vRelT) * SPIN_K;
           }
 
           // kleine Positionskorrektur aus dem Paddle heraus
-          ball.x += nwx * (penetration + SLOP);
-          ball.y += nwy * (penetration + SLOP);
+          ball.x += nwx * (penetration + SLOP_PADDLE);
+          ball.y += nwy * (penetration + SLOP_PADDLE);
 
           p.pt = p.t;
         }
       }
 
-      // ---------- Integration mit Substeps + robuste Masken-Kollision ----------
-      // Wir teilen die Bewegung in kleine Schritte, damit der Ball nicht „tunnelt“.
-      const speed = Math.hypot(ball.vx, ball.vy);
-      let substeps = Math.ceil((speed*dt) / (ball.r * 0.5));
+      // ---------- Integration mit Substeps + Bisection gegen die Maske ----------
+      // Schrittweise Integration, um Tunneln zu vermeiden.
+      let remainingX = ball.vx * dt;
+      let remainingY = ball.vy * dt;
+      let substeps = Math.ceil(Math.hypot(remainingX, remainingY) / (ball.r * 0.5));
       substeps = clamp(substeps, 1, SUBSTEP_MAX);
 
-      const stepVX = ball.vx * dt / substeps;
-      const stepVY = ball.vy * dt / substeps;
+      const stepX = remainingX / substeps;
+      const stepY = remainingY / substeps;
 
       for (let s=0; s<substeps; s++){
-        // Vorschlag: Schritt bewegen
-        ball.x += stepVX;
-        ball.y += stepVY;
+        const startX = ball.x, startY = ball.y;
+        const targetX = startX + stepX;
+        const targetY = startY + stepY;
 
-        // Falls der Kreis jetzt in „solid“ eindringt: korrigieren (+ Velocity reagieren)
-        let guard=0;
-        while (circleTouchesSolid(ball.x, ball.y, ball.r) && guard++ < 6){
-          const {nx, ny, cnt} = correctionNormal(ball.x, ball.y, ball.r);
-          if (cnt === 0) break;
-          // aus der Wand raus schieben
-          ball.x += nx * 1.2;
-          ball.y += ny * 1.2;
-          // Geschwindigkeit an der Wand reflektieren (nur Normalanteil)
-          const vDotN = ball.vx*nx + ball.vy*ny;
-          if (vDotN > 0) { // bewegt sich nach innen → nur dann korrigieren
-            ball.vx -= (1 + 0.2) * vDotN * nx; // 0.2 = leichte Wand-Dämpfung
-            ball.vy -= (1 + 0.2) * vDotN * ny;
+        if (!circleTouchesSolid(targetX, targetY, ball.r)) {
+          ball.x = targetX; ball.y = targetY;
+        } else {
+          // Zeit des Kontakts via Bisection in [0,1]
+          let lo = 0, hi = 1;
+          for (let i=0;i<8;i++){
+            const mid = (lo+hi)/2;
+            const mx = startX + stepX*mid;
+            const my = startY + stepY*mid;
+            if (circleTouchesSolid(mx, my, ball.r)) hi = mid; else lo = mid;
+          }
+          // an die erlaubte Seite gehen
+          ball.x = startX + stepX*lo;
+          ball.y = startY + stepY*lo;
+
+          // Normale weg von Weiß (solid) bestimmen und sanft separieren
+          const {nx, ny} = normalAwayFromSolid(ball.x, ball.y, ball.r);
+          if (nx !== 0 || ny !== 0) {
+            // minimale Separation, um an der Grenze klebefrei zu bleiben
+            ball.x += nx * 0.8;
+            ball.y += ny * 0.8;
+
+            // Geschwindigkeit an der Wand reflektieren (nur wenn wir in die Wand laufen)
+            const vDotN = ball.vx*nx + ball.vy*ny;
+            if (vDotN < 0) {
+              const e = 0.5; // Wand-Dämpfung
+              ball.vx -= (1+e) * vDotN * nx;
+              ball.vy -= (1+e) * vDotN * ny;
+            }
           }
         }
       }
@@ -310,7 +322,7 @@
       ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
       ctx.fillStyle = 'rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
 
-      // Ball-Graphics skaliert auf Radius
+      // Ball-Graphics
       if(ballBase.complete){
         ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle);
         ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore();
@@ -324,13 +336,8 @@
         const p = pointers[id]; const col = deviceColors[id] || '#fff';
         ctx.save(); ctx.translate(p.sx, p.sy); ctx.rotate(p.rot || 0);
         ctx.fillStyle = col;
-        if (ctx.roundRect) {
-          ctx.beginPath();
-          ctx.roundRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK, PADDLE_THICK/2);
-          ctx.fill();
-        } else {
-          ctx.fillRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK);
-        }
+        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK, PADDLE_THICK/2); ctx.fill(); }
+        else { ctx.fillRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK); }
         ctx.restore();
       }
     }
