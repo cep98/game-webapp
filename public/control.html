@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>Control – Paddle</title>
+  <title>Control – Paddle (axes fixed)</title>
   <style>
     :root { --accent: #4f46e5; }
     * { box-sizing: border-box; }
@@ -15,15 +15,9 @@
       -webkit-user-select: none; user-select: none;
       -webkit-touch-callout: none;
     }
-    .wrap {
-      width: min(560px, 92vw);
-      display: grid; gap: 20px;
-      justify-items: center;
-    }
+    .wrap { width: min(560px, 92vw); display: grid; gap: 20px; justify-items: center; }
     .row { width: 100%; display: flex; align-items: center; justify-content: space-between; }
     .badge { opacity: .7; font-size: 12px; }
-
-    /* Laser/Paddle Button */
     .laser {
       width: min(70vw, 360px); height: min(70vw, 360px);
       border-radius: 999px;
@@ -31,21 +25,12 @@
                   conic-gradient(from 180deg at 50% 50%, rgba(255,255,255,.08), rgba(255,255,255,0));
       border: 8px solid var(--accent);
       box-shadow: 0 10px 30px rgba(79,70,229,.35), inset 0 8px 20px rgba(255,255,255,.08);
-      touch-action: none; /* keine Scroll-Gesten */
-      display: grid; place-items: center;
-      position: relative;
+      touch-action: none; display: grid; place-items: center; position: relative;
     }
     .laser:active { filter: brightness(1.08); }
-    .laser::after { /* kleiner Punkt innen, rein visuell */
-      content: ""; width: 18%; height: 18%; border-radius: 999px;
-      background: rgba(255,255,255,.12);
-      box-shadow: 0 0 30px rgba(255,255,255,.2) inset;
-    }
-
-    /* Icon-only helper (keine sichtbaren Texte auf Buttons) */
+    .laser::after { content: ""; width: 18%; height: 18%; border-radius: 999px; background: rgba(255,255,255,.12); box-shadow: 0 0 30px rgba(255,255,255,.2) inset; }
     .btn { width: 48px; height: 48px; border-radius: 14px; background: #11131a; border: 1px solid #1f2330; display: grid; place-items: center; }
     .btn svg { width: 22px; height: 22px; opacity: .8; }
-
     .hint { opacity: .7; font-size: 13px; text-align: center; }
   </style>
 </head>
@@ -54,14 +39,11 @@
     <div class="row">
       <div class="badge" id="status">verbunden…</div>
       <div class="btn" id="permBtn" title="Sensor erlauben" aria-label="Sensor erlauben">
-        <!-- bolt icon -->
         <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L3 14h7v8l11-14h-8l0-6z"/></svg>
       </div>
     </div>
 
-    <button class="laser" id="laserBtn" aria-label="Laser">
-      <!-- absichtlich kein Text -->
-    </button>
+    <button class="laser" id="laserBtn" aria-label="Laser"></button>
 
     <div class="hint">Tippe & halte zum Zeichnen. Erster Druck kalibriert die Mittelstellung. Paddle-Winkel = 3. Achse.</div>
   </div>
@@ -77,35 +59,23 @@
     let drawing = false;
     let calibrated = false;
 
-    // Orientierung live
     let lastAlpha = 0, lastBeta = 0, lastGamma = 0;
-    // Nullstellung bei erstem Druck
     let zeroA = 0, zeroB = 0, zeroG = 0;
 
-    // Grenzen für Mapping (Grad)
-    const MAX_HOR = 20;   // Alpha-Seitwärtsneigung → X
-    const MAX_VER = 20;   // Beta Vor/Zurück → Y
-    const MAX_ROT = 60;   // Gamma → Paddle-Rotation
+    const MAX_HOR = 20;   // Alpha → X
+    const MAX_VER = 20;   // Beta  → Y
+    const MAX_ROT = 60;   // Gamma → Rotation
 
-    // ===== Socket =====
     socket.on('connect', () => {
       statusEl.textContent = 'verbunden';
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
-
-    socket.on('disconnect', () => {
-      statusEl.textContent = 'getrennt';
-    });
-
+    socket.on('disconnect', () => { statusEl.textContent = 'getrennt'; });
     socket.on('assign-color', (color) => {
-      if (!color) return;
-      myColor = color;
-      document.documentElement.style.setProperty('--accent', color);
-      laserBtn.style.borderColor = color;
+      if (!color) return; myColor = color; document.documentElement.style.setProperty('--accent', color); laserBtn.style.borderColor = color;
     });
 
-    // ===== Sensor Permission (iOS) =====
     async function ensureOrientationPermission(){
       try {
         const DOE = window.DeviceOrientationEvent;
@@ -113,9 +83,8 @@
           const res = await DOE.requestPermission();
           return res === 'granted';
         }
-        // Android/Desktops brauchen kein explizites Permit
         return true;
-      } catch(e){ return false; }
+      } catch { return false; }
     }
 
     permBtn.addEventListener('click', async () => {
@@ -123,55 +92,38 @@
       statusEl.textContent = ok ? 'Sensor: OK' : 'Sensor: verweigert';
     });
 
-    // ===== Input: Laser Button down/up (ohne sichtbaren Text) =====
     function pressStart(){
-      if (drawing) return;
-      drawing = true;
-      ensureOrientationPermission(); // still try (iOS)
-      // Erste Kalibrierung beim ersten Druck
-      if (!calibrated) {
-        zeroA = lastAlpha; zeroB = lastBeta; zeroG = lastGamma;
-        calibrated = true;
-      }
-      // Startsignal (optional, wird von display ggf. ignoriert)
+      if (drawing) return; drawing = true; ensureOrientationPermission();
+      if (!calibrated) { zeroA = lastAlpha; zeroB = lastBeta; zeroG = lastGamma; calibrated = true; }
       socket.emit('draw', { isStart:true, x:0.5, y:0.5, rot:0, deviceId: socket.id, color: myColor });
     }
-    function pressEnd(){
-      if (!drawing) return;
-      drawing = false;
-      socket.emit('draw-end', { deviceId: socket.id });
-    }
+    function pressEnd(){ if (!drawing) return; drawing = false; socket.emit('draw-end', { deviceId: socket.id }); }
 
-    // Touch + Maus + Pointer
     laserBtn.addEventListener('touchstart', (e)=>{ e.preventDefault(); pressStart(); }, { passive:false });
     laserBtn.addEventListener('touchend',   (e)=>{ e.preventDefault(); pressEnd(); }, { passive:false });
     laserBtn.addEventListener('mousedown',  (e)=>{ e.preventDefault(); pressStart(); });
-    window.addEventListener('mouseup',      (e)=>{ pressEnd(); });
+    window.addEventListener('mouseup',      ()=>{ pressEnd(); });
 
-    // ===== Orientation → x, y, rot =====
     function wrap180(d){ if (d > 180) d -= 360; if (d < -180) d += 360; return d; }
     function clamp01(v){ return Math.max(0, Math.min(1, v)); }
 
     window.addEventListener('deviceorientation', (ev) => {
       if (typeof ev.alpha === 'number') lastAlpha = ev.alpha;
       if (typeof ev.beta  === 'number') lastBeta  = ev.beta;
-      if (typeof ev.gamma === 'number') lastGamma = ev.gamma; // [-90, +90] typischerweise
-
+      if (typeof ev.gamma === 'number') lastGamma = ev.gamma;
       if (!drawing) return;
 
-      // deltas um die Nullstellung
-      let dA = wrap180(lastAlpha - zeroA); // [-180..180]
-      let dB = lastBeta  - zeroB;          // Beta ist i.d.R. schon in ca. [-90..90]
-      let dG = lastGamma - zeroG;          // Gamma ca. [-90..90]
+      let dA = wrap180(lastAlpha - zeroA);
+      let dB = lastBeta  - zeroB;
+      let dG = lastGamma - zeroG;
 
-      // begrenzen
       dA = Math.max(-MAX_HOR, Math.min(MAX_HOR, dA));
       dB = Math.max(-MAX_VER, Math.min(MAX_VER, dB));
       dG = Math.max(-MAX_ROT, Math.min(MAX_ROT, dG));
 
-      // normieren auf [0,1]
-      const x = clamp01((dA + MAX_HOR) / (2*MAX_HOR));
-      const y = clamp01((dB + MAX_VER) / (2*MAX_VER));
+      // Achsen-Richtung wie im Original: 1 - norm(...)
+      const x = 1 - ((dA + MAX_HOR) / (2*MAX_HOR));
+      const y = 1 - ((dB + MAX_VER) / (2*MAX_VER));
       const rot = (dG * Math.PI) / 180; // Radiant
 
       socket.emit('draw', { x, y, rot, deviceId: socket.id, color: myColor });
