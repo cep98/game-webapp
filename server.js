@@ -1,16 +1,16 @@
-// v2.1.3 – WS-only + volatile forward für Draw-Events
+// v2.1.4 – WS-only, volatile forward, Binary-Payloads ok, Rate-Suggest Forwarding
 const path = require('path');
 const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
 const { Server } = require('socket.io');
 
-// WICHTIG: Nur WebSocket, keine Polling-Upgrades, keine Message-Kompression
 const io = new Server(server, {
   cors: { origin: '*' },
   transports: ['websocket'],
   perMessageDeflate: false,
-  httpCompression: false
+  httpCompression: false,
+  maxHttpBufferSize: 1e6
 });
 
 const PORT = process.env.PORT || 3000;
@@ -25,13 +25,7 @@ const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46
 let colorIndex = 0;
 
 const clients = new Map(); // socketId -> { socket, type, deviceId, ip, color }
-let settings = {
-  maxHor: 20,
-  maxVer: 20,
-  smoothing: 0.5,
-  paddleLength: 240, // Display nutzt lokal 80px
-  paddleWidth: 14
-};
+let settings = { maxHor: 20, maxVer: 20, smoothing: 0.5, paddleLength: 240, paddleWidth: 14 };
 
 function broadcastClientList() {
   const list = [];
@@ -40,12 +34,7 @@ function broadcastClientList() {
   }
   for (const [_, c] of clients.entries()) if (c.type === 'admin') c.socket.emit('client-list', list);
 }
-
-function assignColor() {
-  const color = COLORS[colorIndex % COLORS.length];
-  colorIndex++;
-  return color;
-}
+function assignColor() { const color = COLORS[colorIndex % COLORS.length]; colorIndex++; return color; }
 
 io.on('connection', (socket) => {
   const ip = socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim() || socket.handshake.address;
@@ -72,12 +61,10 @@ io.on('connection', (socket) => {
     io.emit('settings', settings);
   });
 
-  // >>> Volatile Forward: werden Frames gestaut, werden sie lieber DROPPED statt verzögert
+  // Volatile Forward – unterstützt JSON & ArrayBuffer ohne Pufferung
   socket.on('draw', (payload) => {
-    for (const [_, c] of clients.entries()) {
-      if (c.type === 'display') {
-        c.socket.compress(false).volatile.emit('draw', payload);
-      }
+    for (const [_, c] of clients.entries()) if (c.type === 'display') {
+      c.socket.compress(false).volatile.emit('draw', payload);
     }
   });
 
@@ -85,10 +72,16 @@ io.on('connection', (socket) => {
     for (const [_, c] of clients.entries()) if (c.type === 'display') c.socket.emit('draw-end', { deviceId });
   });
 
-  // ACK vom Display → zurück zum jeweiligen Control (für RTT)
+  // ACK vom Display -> Control (RTT)
   socket.on('draw-ack', ({ deviceId, seq }) => {
     const target = clients.get(deviceId);
-    if (target && target.socket) target.socket.emit('draw-ack', { seq });
+    if (target?.socket) target.socket.emit('draw-ack', { seq });
+  });
+
+  // Display schlägt Rate vor -> an passendes Control weiterreichen
+  socket.on('rate-suggest', ({ deviceId, targetFps }) => {
+    const target = clients.get(deviceId);
+    if (target?.socket) target.socket.emit('rate-suggest', { targetFps });
   });
 
   socket.on('kill-client', ({ socketId }) => {
@@ -98,10 +91,7 @@ io.on('connection', (socket) => {
     if (victim) victim.socket.disconnect(true);
   });
 
-  socket.on('disconnect', () => {
-    clients.delete(socket.id);
-    broadcastClientList();
-  });
+  socket.on('disconnect', () => { clients.delete(socket.id); broadcastClientList(); });
 
   socket.emit('settings', settings);
 });
