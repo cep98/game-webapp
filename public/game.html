@@ -26,7 +26,7 @@
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify', { role:'display', deviceId: socket.id });
+      socket.emit('identify',{ role:'display', deviceId: socket.id });
     });
 
     const canvas = document.getElementById('gameCanvas'),
@@ -53,9 +53,9 @@
           maskCanvas.width  = maskImage.width;
           maskCanvas.height = maskImage.height;
           maskCtx = maskCanvas.getContext('2d');
-          maskCtx.drawImage(maskImage, 0, 0);
-          ball.x = canvas.width / 2;
-          ball.y = canvas.height / 2;
+          maskCtx.drawImage(maskImage,0,0);
+          ball.x = canvas.width/2;
+          ball.y = canvas.height/2;
         }
       };
     });
@@ -72,7 +72,7 @@
     let colorIndex = 0;
 
     const particles = [];
-    function spawnParticles(x, y, color, count = 4) {
+    function spawnParticles(x, y, color, count = 3) {
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * 2 * Math.PI;
         const speed = 1 + Math.random() * 1.5;
@@ -93,7 +93,7 @@
         p.x += p.vx;
         p.y += p.vy;
         p.t += dt;
-        p.alpha -= 0.025 * dt;
+        p.alpha -= 0.03 * dt;
         if (p.alpha <= 0) particles.splice(i, 1);
       }
     }
@@ -103,21 +103,7 @@
         deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
       }
       if (color) deviceColors[deviceId] = color;
-
-      const now = performance.now();
-      const px = x * canvas.width;
-      const py = y * canvas.height;
-
-      if (!pointers[deviceId]) {
-        pointers[deviceId] = { x: px, y: py, px: px, py: py, t: now };
-      } else {
-        const p = pointers[deviceId];
-        p.px = p.x;
-        p.py = p.y;
-        p.x = px;
-        p.y = py;
-        p.t = now;
-      }
+      pointers[deviceId] = { x, y, t: performance.now(), flash: 0 };
     });
 
     socket.on('draw-end', ({ deviceId }) => {
@@ -129,14 +115,17 @@
 
       for (let id in pointers) {
         const p = pointers[id];
-        const dx = p.x - ball.x;
-        const dy = p.y - ball.y;
+        const px = p.x * canvas.width;
+        const py = p.y * canvas.height;
+        const dx = px - ball.x;
+        const dy = py - ball.y;
         const dist = Math.hypot(dx, dy);
         if (dist < PTR_R + ball.r) {
           const nx = dx / dist;
           const ny = dy / dist;
           ball.vx += nx * 0.5;
           ball.vy += ny * 0.5;
+          p.flash = 5;  // Leuchteffekt auslösen
           spawnParticles(ball.x + nx * ball.r, ball.y + ny * ball.r, deviceColors[id]);
         }
       }
@@ -186,6 +175,7 @@
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(bgImage, 0, 0);
 
+      // Schlagschatten
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
       ctx.shadowBlur = 15;
@@ -197,26 +187,25 @@
       ctx.fill();
       ctx.restore();
 
+      // Ball
       ctx.drawImage(ballBase, ball.x - ball.r, ball.y - ball.r, ball.r * 2, ball.r * 2);
       ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r * 2, ball.r * 2);
 
+      // Pointer
       for (let id in pointers) {
         const p = pointers[id];
-        const dx = p.x - p.px;
-        const dy = p.y - p.py;
-        const len = Math.hypot(dx, dy);
-        const ux = dx / len || 0;
-        const uy = dy / len || 0;
-
-        ctx.strokeStyle = deviceColors[id];
-        ctx.lineWidth = PTR_R;
-        ctx.lineCap = 'round';
+        if (p.flash > 0) p.flash -= 1;
+        const px = p.x * canvas.width;
+        const py = p.y * canvas.height;
+        const blend = p.flash / 5;
+        const c = deviceColors[id];
         ctx.beginPath();
-        ctx.moveTo(p.px, p.py);
-        ctx.lineTo(p.x, p.y);
-        ctx.stroke();
+        ctx.fillStyle = blend > 0 ? "#fff" : c;
+        ctx.arc(px, py, PTR_R, 0, 2 * Math.PI);
+        ctx.fill();
       }
 
+      // Partikel
       for (const p of particles) {
         ctx.beginPath();
         ctx.globalAlpha = p.alpha;
@@ -224,6 +213,7 @@
         ctx.arc(p.x, p.y, 2, 0, 2 * Math.PI);
         ctx.fill();
       }
+
       ctx.globalAlpha = 1.0;
     }
 
