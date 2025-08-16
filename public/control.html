@@ -2,7 +2,11 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+  >
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Control</title>
   <style>
     html, body {
@@ -10,6 +14,8 @@
       color:#fff; font-family:sans-serif;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
       -webkit-user-select:none; user-select:none;
+      /* verhindert Scroll/Back-Swipe-Effekte */
+      touch-action: none; overscroll-behavior: none;
     }
     #version {
       position:absolute; top:10px; right:10px; opacity:0.7; font-size:0.9em;
@@ -22,10 +28,18 @@
     }
     #gyroBtn { border-radius:16px; }
     #laserBtn { border-radius:50%; background:#cc0000; display:none; }
+    /* Hinweis falls doch Landscape aktiv ist */
+    @media (orientation: landscape) {
+      body::after {
+        content: "Bitte im Hochformat nutzen (Rotation gesperrt).";
+        position: fixed; bottom: 12px; left: 0; right: 0;
+        text-align: center; font-size: 12px; opacity: .6;
+      }
+    }
   </style>
 </head>
 <body>
-  <div id="version">v2.0.1 Control</div>
+  <div id="version">v2.0.3 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
 
@@ -60,17 +74,43 @@
       if (typeof s.maxVer === 'number') maxVer = s.maxVer;
     });
 
+    // Versuche die Bildschirm-Orientierung auf "portrait" zu sperren
+    async function tryLockPortrait() {
+      try {
+        // einige Browser verlangen Vollbild für das Lock
+        if (document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
+        } else if (document.documentElement.webkitRequestFullscreen) {
+          await document.documentElement.webkitRequestFullscreen();
+        }
+        if (screen.orientation && screen.orientation.lock) {
+          await screen.orientation.lock('portrait');
+        }
+      } catch (e) {
+        // Ignorieren – auf iOS evtl. nicht verfügbar
+      }
+    }
+
+    // Allgemein: Pinch/Scroll komplett eliminieren
+    document.addEventListener('touchmove', e => e.preventDefault(), { passive:false });
+
     gyroBtn.addEventListener('click', async () => {
       try {
         if (DeviceOrientationEvent?.requestPermission) {
           const perm = await DeviceOrientationEvent.requestPermission();
           if (perm !== 'granted') return alert('Gyroskop-Zugriff benötigt!');
         }
+        await tryLockPortrait();
         gyroBtn.style.display  = 'none';
         laserBtn.style.display = 'block';
       } catch (e) {
         alert('Gyro nicht verfügbar.');
       }
+    });
+
+    // Falls das System trotzdem dreht: erneut sperren
+    window.addEventListener('orientationchange', () => {
+      tryLockPortrait();
     });
 
     laserBtn.addEventListener('touchstart', e => {
