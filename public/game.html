@@ -3,41 +3,66 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.1.1)</title>
+  <title>Game Display – Paddle-Line (v2.1.2)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
     #metrics { position:absolute; top:10px; right:10px; z-index:2; font:12px/1.4 monospace; background:#0008; color:#fff; padding:8px 10px; border-radius:8px; max-width:42vw; }
     canvas { display:block; margin:0 auto; background:#000; }
+
+    /* Lag-Panel (Display-Seite) */
+    #lagPanel {
+      position:absolute; left:10px; bottom:10px; right:10px; max-height:40vh; overflow:auto;
+      background:#000a; border:1px solid #444; border-radius:10px; padding:8px; z-index:3;
+      font:12px/1.35 monospace; color:#fff;
+    }
+    #lagPanel h3 { margin:0 0 6px 0; font:600 12px/1.2 system-ui,sans-serif; display:flex; align-items:center; gap:8px; }
+    #lagPanel button { background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:2px 8px; cursor:pointer; }
+    #lagTable { width:100%; border-collapse:collapse; }
+    #lagTable th, #lagTable td { border-bottom:1px solid #333; padding:4px 6px; text-align:left; }
+    #lagTable th { position: sticky; top: 0; background:#111; }
+    .warn { color:#ffcc66; } .bad { color:#ff6666; }
   </style>
 </head>
 <body>
-  <div id="version">v2.1.1 Game</div>
+  <div id="version">v2.1.2 Game</div>
   <div id="metrics">—</div>
+  <div id="lagPanel">
+    <h3>Übertragungs-Lag (pro Controller)
+      <span style="flex:1"></span>
+      <button id="clearLag">Leeren</button>
+    </h3>
+    <table id="lagTable">
+      <thead><tr><th>Zeit</th><th>Dev</th><th>Metric</th><th>Wert</th><th>Hinweis</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // OneEuroFilter wie v2.1 (zur sanften Anzeige)
-    class OneEuroFilter {
-      constructor(minCutoff = 1.0, beta = 0.015, dCutoff = 1.0) {
-        this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
-        this.xHat = null; this.dxHat = 0;
-      }
-      alpha(fc, dt){ const tau=1/(2*Math.PI*fc); return 1/(1+tau/dt); }
-      filter(x, dt){ if(dt<=0||!isFinite(dt)) dt=1/60; if(this.xHat===null){ this.xHat=x; this.dxHat=0; return x; }
-        const dx=(x-this.xHat)/dt, aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat;
-        const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat), aX=this.alpha(cutoff,dt);
-        this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat; }
-      reset(x){ this.xHat=x; this.dxHat=0; }
-    }
-
     const socket = io();
     socket.on('connect', () => { socket.emit('identify',{ role:'display', deviceId: socket.id }); socket.emit('request-settings'); });
 
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
     const metricsBox = document.getElementById('metrics');
+
+    // Lag-Panel helpers
+    const tbody = document.querySelector('#lagTable tbody');
+    document.getElementById('clearLag').onclick = () => { tbody.innerHTML=''; };
+
+    function nowClock() {
+      const d=new Date(); const p=n=>String(n).padStart(2,'0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+    function addLagRow(devId, metric, val, note, severity='warn'){
+      const short = devId.slice(0,6);
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${nowClock()}</td><td>${short}</td><td>${metric}</td><td class="${severity}">${val}</td><td>${note||''}</td>`;
+      tbody.prepend(tr);
+      while (tbody.children.length > 120) tbody.removeChild(tbody.lastChild);
+    }
 
     // Assets
     let maskCanvas, maskCtx;
@@ -67,9 +92,8 @@
       };
     });
 
-    // Lokale Anzeige-Settings
-    let smoothing      = 0.0;   // Display glättet mit OneEuro unten (fx/fy/fa)
-    let paddleLength   = 80;    // fester Wert hier
+    // Settings (Schläger-Länge fix lokal)
+    let paddleLength   = 80;
     let paddleWidth    = 14;
 
     const FRICTION           = 0.995,
@@ -79,10 +103,27 @@
           CTRL_NORM_SCALE    = 0.0012,
           PTR_TTL            = 1000;
 
+    // Lag-Thresholds (Display-Seite)
+    const RECV_FPS_MIN_WARN = 40; // /s
+    const RECV_FPS_MIN_BAD  = 25; // /s
+    const JITTER_MAX_WARN   = 25; // ms (EWMA von |dt-16.7|)
+    const JITTER_MAX_BAD    = 45; // ms
+    const GAP_MS_WARN       = 120; // einzelner Paketabstand
+    const GAP_MS_BAD        = 220;
+
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    // Paddle-State + Filter + Netz-Metriken
-    // pro id: { rawX, rawY, rawA, x,y,a, px,py, t, color, fx,fy,fa, lastSeq, drops, recvCount, lastRecvT, dtJitter }
+    // pro id: { rawX, rawY, rawA, x,y,a, px,py, t, color, fx,fy,fa, lastSeq, drops, recvCount, lastRecvT, dtJitter, lastLoggedDrops }
+    class OneEuroFilter {
+      constructor(minCutoff = 1.0, beta = 0.015, dCutoff = 1.0) { this.minCutoff=minCutoff; this.beta=beta; this.dCutoff=dCutoff; this.xHat=null; this.dxHat=0; }
+      alpha(fc, dt){ const tau=1/(2*Math.PI*fc); return 1/(1+tau/dt); }
+      filter(x, dt){ if(dt<=0||!isFinite(dt)) dt=1/60; if(this.xHat===null){ this.xHat=x; this.dxHat=0; return x; }
+        const dx=(x-this.xHat)/dt, aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat;
+        const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat), aX=this.alpha(cutoff,dt);
+        this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat; }
+      reset(x){ this.xHat=x; this.dxHat=0; }
+    }
+
     const paddles = {};
     const deviceColors = {};
     const FALLBACK_COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
@@ -100,24 +141,34 @@
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
 
       let p = paddles[deviceId];
+      const dtRecv = p ? (now - p.lastRecvT) : NaN;
+
       if (!p) {
         p = paddles[deviceId] = {
           rawX, rawY, rawA, x:rawX, y:rawY, a:rawA, px:rawX, py:rawY, t:now,
           color: deviceColors[deviceId],
           fx:new OneEuroFilter(1.2,0.015,1.0), fy:new OneEuroFilter(1.2,0.015,1.0), fa:new OneEuroFilter(1.8,0.015,1.0),
-          lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT:now, dtJitter:0
+          lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT:now, dtJitter:0, lastLoggedDrops:0
         };
         p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
       } else {
         // Netzmetriken
         p.recvCount++;
         const dt = now - p.lastRecvT; p.lastRecvT = now;
-        const target = 1000/60; // ~16.7ms
+        const target = 1000/60;
         const j = Math.abs(dt - target);
         p.dtJitter = p.dtJitter ? (0.9*p.dtJitter + 0.1*j) : j;
 
+        // Einzel-GAP-Alarm
+        if (dt > GAP_MS_BAD) addLagRow(deviceId, 'Gap', `${Math.round(dt)} ms`, 'starker Paketabstand', 'bad');
+        else if (dt > GAP_MS_WARN) addLagRow(deviceId, 'Gap', `${Math.round(dt)} ms`, 'hoher Paketabstand', 'warn');
+
         if (typeof seq === 'number') {
-          if (seq > p.lastSeq + 1) p.drops += (seq - p.lastSeq - 1);
+          if (seq > p.lastSeq + 1) {
+            const inc = (seq - p.lastSeq - 1);
+            p.drops += inc;
+            addLagRow(deviceId, 'Drops', `+${inc}`, 'Pakete übersprungen', 'warn');
+          }
           p.lastSeq = Math.max(p.lastSeq, seq);
         }
 
@@ -126,7 +177,7 @@
         if (isStart) { p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA); p.x=rawX; p.y=rawY; p.a=rawA; p.px=p.x; p.py=p.y; }
       }
 
-      // ACK zurück an Control (für RTT)
+      // ACK → Control (RTT)
       if (typeof seq === 'number') socket.emit('draw-ack', { deviceId, seq });
     });
 
@@ -137,6 +188,23 @@
         if(now - paddles[id].t > PTR_TTL) delete paddles[id];
       }
     }
+
+    // pro Sekunde: FPS & Jitter prüfen (pro Controller)
+    setInterval(() => {
+      for (const id in paddles) {
+        const p = paddles[id];
+        const fps = p.recvCount; // ~per Sekunde
+        // Low FPS
+        if (fps && fps < RECV_FPS_MIN_BAD) addLagRow(id, 'recv FPS', `${fps}`, 'sehr niedrig', 'bad');
+        else if (fps && fps < RECV_FPS_MIN_WARN) addLagRow(id, 'recv FPS', `${fps}`, 'niedrig', 'warn');
+        // Jitter
+        if (p.dtJitter > JITTER_MAX_BAD) addLagRow(id, 'Jitter', `${p.dtJitter.toFixed(1)} ms`, 'stark schwankende Frames', 'bad');
+        else if (p.dtJitter > JITTER_MAX_WARN) addLagRow(id, 'Jitter', `${p.dtJitter.toFixed(1)} ms`, 'schwankend', 'warn');
+        // Reset Zähler
+        p.recvFps = fps;
+        p.recvCount = 0;
+      }
+    }, 1000);
 
     function update(dt){
       if(!maskCtx) return;
@@ -210,25 +278,14 @@
 
       ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
 
-      // Netz-Metriken rendern
+      // Kurzmetrics oben rechts (live Snapshot)
       const lines = [];
       for(const id in paddles){
         const p = paddles[id];
-        // grobe Empfangsrate (letzte Sekunde): recvCount wird jeden ~1s reset
         lines.push(`${id.slice(0,6)} | fps≈${p.recvFps ?? '…'} | jitter≈${p.dtJitter?.toFixed(1) ?? '…'}ms | drops=${p.drops}`);
       }
       metricsBox.textContent = lines.length ? lines.join('\n') : 'Warten auf Controller…';
     }
-
-    // Sekundentakt für fps-Schätzung und Counters
-    setInterval(() => {
-      for(const id in paddles){
-        const p = paddles[id];
-        const fps = p.recvCount; // ca. pro Sekunde
-        p.recvFps = fps;
-        p.recvCount = 0;
-      }
-    }, 1000);
 
     function draw(){
       if(bgImage.complete){
