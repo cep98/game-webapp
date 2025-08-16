@@ -3,23 +3,15 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v1.17)</title>
+  <title>Game Display – Paddle-Line (v2.0)</title>
   <style>
-    html, body {
-      margin:0; padding:0; width:100%; height:100%;
-      background:#000; overflow:hidden;
-    }
-    #version {
-      position:absolute; top:10px; left:10px;
-      color:#fff; opacity:0.6; font-size:0.9em;
-    }
-    canvas {
-      display:block; margin:0 auto; background:#000;
-    }
+    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
+    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:1; }
+    canvas { display:block; margin:0 auto; background:#000; }
   </style>
 </head>
 <body>
-  <div id="version">v1.17 Game</div>
+  <div id="version">v2.0 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -30,15 +22,15 @@
       socket.emit('request-settings');
     });
 
-    const canvas = document.getElementById('gameCanvas'),
-          ctx    = canvas.getContext('2d');
-    let maskCanvas, maskCtx;
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
 
+    // Assets (optional, belassen wie gehabt)
+    let maskCanvas, maskCtx;
     const bgImage    = new Image(),
           maskImage  = new Image(),
           ballBase   = new Image(),
           ballShadow = new Image();
-
     bgImage.src    = '/background.png';
     maskImage.src  = '/mask.png';
     ballBase.src   = '/ball-base.png';
@@ -61,95 +53,134 @@
       };
     });
 
-    let smoothing = 0.5;
+    // Settings (können live vom Admin kommen)
+    let smoothing      = 0.5;  // 0..1  (höher = mehr Dämpfung)
+    let paddleLength   = 240;  // px
+    let paddleWidth    = 14;   // px
+
     const FRICTION         = 0.995,
           ANGULAR_FRICTION = 0.95,
           BOUNCE           = 0.8,
           BASE_STRENGTH    = 0.15,
-          SPEED_SCALE      = 0.0002,
-          PTR_TTL          = 500,
-          PTR_R            = 16;
+          SPEED_SCALE      = 0.0002, // Einfluss der Controllerbewegung
+          PTR_TTL          = 500;
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    const pointers     = {};
+    // pro deviceId: { sx, sy, px, py, a, pa, t, pt, color }
+    const paddles = {};
     const deviceColors = {};
-    const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
-    let colorIndex=0;
+    const FALLBACK_COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
+    let colorIdx = 0;
 
-    socket.on('draw', ({x,y,deviceId,color})=>{
+    socket.on('settings', s => {
+      if (typeof s.smoothing === 'number') smoothing = s.smoothing;
+      if (typeof s.paddleLength === 'number') paddleLength = s.paddleLength;
+      if (typeof s.paddleWidth  === 'number') paddleWidth  = s.paddleWidth;
+    });
+
+    socket.on('draw', ({x,y,angleDeg,deviceId,color,isStart})=>{
       if (!canvas.width) return;
       const now  = performance.now();
       const rawX = x * canvas.width, rawY = y * canvas.height;
+      const rawA = (angleDeg ?? 0) * Math.PI/180; // → rad
+
       if (color) deviceColors[deviceId] = color;
-      else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
-      const prev = pointers[deviceId];
-      if (prev) {
-        const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
-        const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
-        pointers[deviceId] = { sx,sy, px:prev.sx, py:prev.sy, t:now, pt:prev.pt };
+      else if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
+
+      const prev = paddles[deviceId];
+      if (!prev || isStart) {
+        paddles[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, a:rawA, pa:rawA, t:now, pt:now, color:deviceColors[deviceId] };
       } else {
-        pointers[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, t:now, pt:now };
+        const sx = prev.sx + (rawX - prev.sx)*(1 - smoothing);
+        const sy = prev.sy + (rawY - prev.sy)*(1 - smoothing);
+        // Winkel-Glättung (kleine Schritte, Gamma ist [-90..90], Wrap kaum Thema)
+        const a  = prev.a  + (rawA - prev.a )*(1 - smoothing);
+        paddles[deviceId] = { sx, sy, px:prev.sx, py:prev.sy, a, pa:prev.a, t:now, pt:prev.pt, color:deviceColors[deviceId] };
       }
     });
-    socket.on('draw-end', ({deviceId})=> delete pointers[deviceId]);
-    socket.on('settings', data=> smoothing = data.smoothing);
 
+    socket.on('draw-end', ({deviceId})=> delete paddles[deviceId]);
+
+    // Alte Paddles entsorgen
     function cleanup(now){
-      for(let id in pointers){
-        if(now - pointers[id].t > PTR_TTL) delete pointers[id];
+      for(const id in paddles){
+        if(now - paddles[id].t > PTR_TTL) delete paddles[id];
       }
+    }
+
+    function reflectVelocityOnNormal(vx, vy, nx, ny) {
+      // v' = v - 2 (v·n) n
+      const dot = vx*nx + vy*ny;
+      return [vx - 2*dot*nx, vy - 2*dot*ny];
     }
 
     function update(dt){
       if(!maskCtx) return;
       cleanup(performance.now());
 
-      for(let id in pointers){
-        const p = pointers[id];
-        const dx = p.sx - p.px, dy = p.sy - p.py;
-        const segLen = Math.hypot(dx,dy);
-        const steps = Math.ceil(segLen / 8);
-        const hitRadius = ball.r * 1.1 + PTR_R;
+      // Kollision mit allen Paddles (als Liniensegmente)
+      for(const id in paddles){
+        const p = paddles[id];
+        // Segment: Mittelpunkt P(sx,sy), Richtung u = (cos a, sin a), Länge L
+        const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
+        const L2 = paddleLength * 0.5;
 
-        for (let i = 0; i <= steps; i++) {
-          const t = i / steps;
-          const ix = p.px + dx * t;
-          const iy = p.py + dy * t;
+        // Nächster Punkt Q auf Segment zu Kugelzentrum C
+        const vx = ball.x - p.sx;
+        const vy = ball.y - p.sy;
+        let t = vx*u.x + vy*u.y;           // Projektion auf u (Skalar)
+        t = Math.max(-L2, Math.min(L2, t)); // clamp auf Segmentgrenzen
+        const qx = p.sx + u.x * t;
+        const qy = p.sy + u.y * t;
 
-          const dist = Math.hypot(ball.x - ix, ball.y - iy);
-          if (dist <= hitRadius) {
-            let nx = ball.x - ix;
-            let ny = ball.y - iy;
-            const d = Math.hypot(nx, ny) || 1;
-            nx /= d; ny /= d;
+        // Abstand Kugelzentrum zu Q
+        let nx = ball.x - qx;
+        let ny = ball.y - qy;
+        const dist = Math.hypot(nx, ny);
+        const hitDist = ball.r + paddleWidth*0.5;
 
-            const deltaT = Math.max(p.t - p.pt, 1);
-            const speed = segLen * 1000 / deltaT;
-            const strength = BASE_STRENGTH + speed * SPEED_SCALE;
+        if (dist <= hitDist) {
+          // Kollisionsnormal n (vom Paddle zum Ball)
+          const d = dist || 1;
+          nx /= d; ny /= d;
 
-            ball.vx += nx * strength;
-            ball.vy += ny * strength;
+          // Bewegungsstärke des Controllers
+          const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
+          const deltaT = Math.max(p.t - p.pt, 1);
+          const ctrlSpeed = segLen * 1000 / deltaT;
+          const strength = BASE_STRENGTH + ctrlSpeed * SPEED_SCALE;
 
-            const rx = ix - ball.x;
-            const ry = iy - ball.y;
-            const tx = -ny, ty = nx;
-            ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
+          // Impuls aufs Ballzentrum entlang Normalenrichtung
+          ball.vx += nx * strength;
+          ball.vy += ny * strength;
 
-            ball.x += nx * 1.5;
-            ball.y += ny * 1.5;
+          // Zusätzliche Reflexion (elastischer Anteil)
+          [ball.vx, ball.vy] = reflectVelocityOnNormal(ball.vx, ball.vy, nx, ny);
 
-            p.pt = p.t;
-            break;
-          }
+          // Rausdrücken, damit er nicht „klebt“
+          const pen = hitDist - dist + 0.5;
+          ball.x += nx * pen;
+          ball.y += ny * pen;
+
+          // Grobe Rotation: tangentiale Komponente erzeugt Drehimpuls
+          // Tangente = senkrecht zur Normalen
+          const tx = -ny, ty = nx;
+          const tangential = ball.vx*tx + ball.vy*ty;
+          ball.angularVelocity += tangential * 0.001;
+
+          // Vergiss nicht: Controller-"Vergangenheitszeit" updaten,
+          // damit mehrere Hits pro Frame verhindert werden
+          p.pt = p.t;
         }
       }
 
+      // Ballphysik
       ball.x += ball.vx*dt;
       ball.y += ball.vy*dt;
       ball.angle += ball.angularVelocity*dt;
 
-      // Korrekte Maskenkollision: Ball darf nur auf heller Fläche bleiben
+      // Masken-Kollision: Ball muss auf heller Fläche bleiben
       let correctionX = 0, correctionY = 0, hitCount = 0;
       for(let i=0;i<16;i++){
         const ang = i*(Math.PI*2/16);
@@ -157,7 +188,7 @@
         const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
           const d = maskCtx.getImageData(ex,ey,1,1).data;
-          // Weiß = Spielfläche → also Kollision, wenn der Punkt NICHT weiß
+          // Weiß = Spielfläche → Kollision, wenn NICHT weiß
           if(d[0]<200 || d[1]<200 || d[2]<200){
             const nx = Math.cos(ang);
             const ny = Math.sin(ang);
@@ -167,7 +198,6 @@
           }
         }
       }
-
       if (hitCount > 0) {
         correctionX /= hitCount;
         correctionY /= hitCount;
@@ -178,6 +208,7 @@
         ball.y += correctionY * 2;
       }
 
+      // Canvas-Grenzen
       if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
       if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
       if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
@@ -193,19 +224,23 @@
         const bx=(canvas.width-bgImage.width)/2;
         const by=(canvas.height-bgImage.height)/2;
         ctx.drawImage(bgImage,bx,by);
-      } else ctx.clearRect(0,0,canvas.width,canvas.height);
-// Schlagschatten unter dem Ball
-ctx.save();
-ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-ctx.shadowBlur = 15;
-ctx.shadowOffsetX = -15;
-ctx.shadowOffsetY = 15;
-ctx.beginPath();
-ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-ctx.fillStyle = 'rgba(0,0,0,1)';
-ctx.fill();
-ctx.restore();
+      } else {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+      }
 
+      // Schlagschatten unter dem Ball
+      ctx.save();
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+      ctx.shadowBlur = 15;
+      ctx.shadowOffsetX = -15;
+      ctx.shadowOffsetY = 15;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      ctx.fill();
+      ctx.restore();
+
+      // Ball
       if(ballBase.complete){
         ctx.save();
         ctx.translate(ball.x,ball.y);
@@ -213,17 +248,29 @@ ctx.restore();
         ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
         ctx.restore();
       }
-
       if(ballShadow.complete){
         ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
       }
 
-      for(let id in pointers){
-        const p=pointers[id];
-        ctx.fillStyle=deviceColors[id];
+      // Paddles zeichnen
+      for(const id in paddles){
+        const p = paddles[id];
+        ctx.save();
+        ctx.translate(p.sx, p.sy);
+        ctx.rotate(p.a);
+        ctx.fillStyle = p.color || '#fff';
         ctx.beginPath();
-        ctx.arc(p.sx,p.sy,PTR_R,0,2*Math.PI);
+        // Abgerundete Kapsel: Rechteck + Kreise
+        const L = paddleLength, W = paddleWidth, r = W/2;
+        // Mittelachse ist in x-Richtung, Segment von -L/2 bis +L/2
+        ctx.moveTo(-L/2, -r);
+        ctx.lineTo( L/2, -r);
+        ctx.arc( L/2, 0, r, -Math.PI/2,  Math.PI/2);
+        ctx.lineTo(-L/2, r);
+        ctx.arc(-L/2, 0, r,  Math.PI/2, -Math.PI/2);
+        ctx.closePath();
         ctx.fill();
+        ctx.restore();
       }
     }
 
