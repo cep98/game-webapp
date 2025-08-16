@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.1.4)</title>
+  <title>Game Display – Paddle-Line (v2.2.0)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
-    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
-    #metrics { position:absolute; top:10px; right:10px; z-index:2; font:12px/1.4 monospace; background:#0008; color:#fff; padding:8px 10px; border-radius:8px; max-width:42vw; }
-    canvas { display:block; margin:0 auto; background:#000; }
+    #version  { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
+    #metrics  { position:absolute; top:10px; right:10px; z-index:2; font:12px/1.4 monospace; background:#0008; color:#fff; padding:8px 10px; border-radius:8px; max-width:42vw; white-space:pre; }
+    canvas    { display:block; margin:0 auto; background:#000; }
     #lagPanel { position:absolute; left:10px; bottom:10px; right:10px; max-height:40vh; overflow:auto; background:#000a; border:1px solid #444;
       border-radius:10px; padding:8px; z-index:3; font:12px/1.35 monospace; color:#fff; }
     #lagPanel h3 { margin:0 0 6px 0; font:600 12px/1.2 system-ui,sans-serif; display:flex; align-items:center; gap:8px; }
@@ -20,206 +20,350 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.1.4 Game</div>
+  <div id="version">v2.2.0 Game</div>
   <div id="metrics">—</div>
   <div id="lagPanel">
-    <h3>Übertragungs-Lag (pro Controller) <span style="flex:1"></span><button id="clearLag">Leeren</button></h3>
-    <table id="lagTable"><thead><tr><th>Zeit</th><th>Dev</th><th>Metric</th><th>Wert</th><th>Hinweis</th></tr></thead><tbody></tbody></table>
+    <h3>Übertragungs-Lag (pro Controller)
+      <span style="flex:1"></span>
+      <button id="clearLag">Leeren</button>
+    </h3>
+    <table id="lagTable">
+      <thead><tr><th>Zeit</th><th>Dev</th><th>Metric</th><th>Wert</th><th>Hinweis</th></tr></thead>
+      <tbody></tbody>
+    </table>
   </div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // WebSocket only
     const socket = io({ transports:['websocket'], upgrade:false });
     socket.on('connect', () => { socket.emit('identify',{ role:'display', deviceId: socket.id }); socket.emit('request-settings'); });
 
-    const canvas=document.getElementById('gameCanvas'), ctx=canvas.getContext('2d'), metricsBox=document.getElementById('metrics');
-    const tbody=document.querySelector('#lagTable tbody'); document.getElementById('clearLag').onclick=()=>{tbody.innerHTML='';};
-    function nowClock(){const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
-    function addLagRow(devId,metric,val,note,sev='warn'){const tr=document.createElement('tr'); tr.innerHTML=`<td>${nowClock()}</td><td>${devId.slice(0,6)}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`; tbody.prepend(tr); while(tbody.children.length>140) tbody.removeChild(tbody.lastChild);}
+    const canvas = document.getElementById('gameCanvas');
+    const ctx    = canvas.getContext('2d');
+    const metricsBox = document.getElementById('metrics');
+
+    // Lag-Panel helpers
+    const tbody = document.querySelector('#lagTable tbody');
+    document.getElementById('clearLag').onclick = () => { tbody.innerHTML=''; };
+    const clock = () => new Date().toLocaleTimeString();
+    function addLagRow(devId, metric, val, note, sev='warn'){
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${clock()}</td><td>${devId}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`;
+      tbody.prepend(tr);
+      while (tbody.children.length > 140) tbody.removeChild(tbody.lastChild);
+    }
 
     // Assets
     let maskCanvas, maskCtx;
-    const bgImage=new Image(), maskImage=new Image(), ballBase=new Image(), ballShadow=new Image();
-    bgImage.src='background.png'; maskImage.src='mask.png'; ballBase.src='ball-base.png'; ballShadow.src='ball-shadow.png';
+    const bgImage    = new Image(),
+          maskImage  = new Image(),
+          ballBase   = new Image(),
+          ballShadow = new Image();
+    bgImage.src    = 'background.png';
+    maskImage.src  = 'mask.png';
+    ballBase.src   = 'ball-base.png';
+    ballShadow.src = 'ball-shadow.png';
 
-    let loaded=0; [bgImage,maskImage].forEach(img=>{ img.onload=()=>{ if(++loaded===2){ canvas.width=maskImage.width; canvas.height=maskImage.height;
-      maskCanvas=document.createElement('canvas'); maskCanvas.width=maskImage.width; maskCanvas.height=maskImage.height;
-      maskCtx=maskCanvas.getContext('2d'); maskCtx.drawImage(maskImage,0,0); ball.x=canvas.width/2; ball.y=canvas.height/2; } }; });
+    let loaded=0;
+    [bgImage, maskImage].forEach(img=>{
+      img.onload = ()=>{
+        if (++loaded === 2) {
+          canvas.width  = maskImage.width;
+          canvas.height = maskImage.height;
+          maskCanvas    = document.createElement('canvas');
+          maskCanvas.width  = maskImage.width;
+          maskCanvas.height = maskImage.height;
+          maskCtx = maskCanvas.getContext('2d');
+          maskCtx.drawImage(maskImage,0,0);
+          ball.x = canvas.width/2;
+          ball.y = canvas.height/2;
+        }
+      };
+    });
 
-    let paddleLength=80, paddleWidth=14;
+    // Settings
+    let paddleLength = 80;   // 1/3 gegenüber früheren langen Balken
+    let paddleWidth  = 14;
+
     const FRICTION=0.995, ANGULAR_FRICTION=0.95, BOUNCE=0.8, RESTITUTION_PAD=1.45, CTRL_NORM_SCALE=0.0012, PTR_TTL=1000;
 
-    // Rate-Suggest Regeln
-    const RECV_FPS_MIN_WARN=26, RECV_FPS_MIN_BAD=18;
-    const JITTER_MAX_WARN=28, JITTER_MAX_BAD=45;
+    // --- EMA + Segment-Interpolation Parameter (dt-unabhängig) ---
+    const K_POS = 0.35;  // wie stark Roh→EMA pro Paket (0..1)
+    const K_ANG = 0.25;  // Winkel-EMA
+    const SEG_DUR_MIN = 18;    // ms (für sehr schnelle Pakete)
+    const SEG_DUR_MAX = 110;   // ms (bei größeren Gaps)
+    const CLAMP_VEL   = 2500;  // px/s max. für Interpolation (gegen Ausreißer)
 
-    const paddles={}, deviceColors={}, FALLBACK_COLORS=['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6']; let colorIdx=0;
-    let ball={x:0,y:0,vx:0,vy:0,r:20,angle:0,angularVelocity:0};
+    // Hilfsfunktionen für Winkel (in Rad)
+    function angLerp(a, b, t){
+      let d = b - a;
+      while (d > Math.PI)  d -= 2*Math.PI;
+      while (d < -Math.PI) d += 2*Math.PI;
+      return a + d * t;
+    }
+    const smoothstep = t => (t<=0?0:(t>=1?1:t*t*(3-2*t)));
 
-    class OneEuroFilter{constructor(m=1,b=0.015,d=1){this.minCutoff=m;this.beta=b;this.dCutoff=d;this.xHat=null;this.dxHat=0;}
-      alpha(fc,dt){const tau=1/(2*Math.PI*fc);return 1/(1+tau/dt);} filter(x,dt){if(dt<=0||!isFinite(dt))dt=1/60; if(this.xHat===null){this.xHat=x;this.dxHat=0;return x;}
-      const dx=(x-this.xHat)/dt,aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat; const c=this.minCutoff+this.beta*Math.abs(this.dxHat),aX=this.alpha(c,dt);
-      this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat;} reset(x){this.xHat=x;this.dxHat=0;}}
+    // Paddles + Farblogik
+    const paddles = {}; // key -> paddle state
+    const deviceColors = {};
+    const COLORS=['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#008080','#9a6324','#800000','#469990'];
+    let colorIdx = 0;
+
+    function keyLabel(k){ return (typeof k==='number') ? k.toString(36) : String(k).slice(0,6); }
+
+    // Ball
+    let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
     socket.on('settings', s => { if(typeof s.paddleWidth==='number') paddleWidth=s.paddleWidth; });
 
-    // JSON oder Binary empfangen
+    // Eingehende Draw-Events: Binär (24 Byte) ODER JSON (Fallback)
     socket.on('draw', (payload)=>{
-      const now=performance.now();
-      let xN,yN,angleDeg,seq,flags=0,deviceId;
+      const now = performance.now();
+      let key, xN, yN, angleDeg, seq, flags=0;
 
       if (payload instanceof ArrayBuffer || ArrayBuffer.isView(payload)) {
         const buf = payload.buffer ? payload.buffer : payload;
-        const dv = new DataView(buf);
-        xN = dv.getFloat32(0, true);
-        yN = dv.getFloat32(4, true);
-        angleDeg = dv.getFloat32(8, true);
-        seq = dv.getUint32(12, true);
-        flags = dv.getUint32(16, true);
-        // deviceId ist der Socket des Controllers; wird bei Binary nicht mitgeschickt,
-        // daher nutzen wir den Sender-Channel-Ansatz: socket.id des Controllers ist uns unbekannt.
-        // Workaround: Der Controller sendet weiterhin als JSON *deviceId* in draw-end,
-        // und hier merken wir uns die letzte id pro Verbindung über Farbe. Einfacher:
-        // Wir nehmen einen Pseudo-Key pro Absender: dv-encoded seq kann nicht reichen.
-        // => Lösung: Wir hängen auf der Server-Seite nichts an. Also nutzen wir xN,yN,angle ohne id.
-        // PRAKTISCH: Wir verwenden eine Ein-Controller-Annahme oder setzen eine generische id 'bin'.
-        deviceId = 'bin'; // für ein einzelnes Handy ausreichend
+        const dv  = new DataView(buf);
+        key      = dv.getUint32(0, true);
+        xN       = dv.getFloat32(4, true);
+        yN       = dv.getFloat32(8, true);
+        angleDeg = dv.getFloat32(12, true);
+        seq      = dv.getUint32(16, true);
+        flags    = dv.getUint32(20, true);
       } else {
-        // Fallback: altes JSON-Format
-        xN = payload.x; yN = payload.y; angleDeg = payload.angleDeg; seq = payload.seq; flags = payload.isStart ? 1 : 0;
-        deviceId = payload.deviceId || 'json';
-        const color = payload.color;
-        if (color) deviceColors[deviceId]=color;
+        key      = payload.deviceKey ?? 'json';
+        xN       = payload.x;
+        yN       = payload.y;
+        angleDeg = payload.angleDeg;
+        seq      = payload.seq;
+        flags    = payload.isStart ? 1 : 0;
+        if (payload.color) deviceColors[key]=payload.color;
       }
 
       if (!canvas.width) return;
 
-      const rawX = xN * canvas.width, rawY = yN * canvas.height;
+      const rawX = xN * canvas.width;
+      const rawY = yN * canvas.height;
       const rawA = (angleDeg ?? 0) * Math.PI/180;
 
-      if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
+      if (!deviceColors[key]) deviceColors[key] = COLORS[colorIdx++ % COLORS.length];
 
-      let p = paddles[deviceId];
+      let p = paddles[key];
+      const nowRecv = performance.now();
+
       if (!p) {
-        p = paddles[deviceId] = { rawX,rawY,rawA, x:rawX,y:rawY,a:rawA, px:rawX,py:rawY, t:now,
-          color: deviceColors[deviceId], fx:new OneEuroFilter(1.2,0.015,1.0), fy:new OneEuroFilter(1.2,0.015,1.0), fa:new OneEuroFilter(1.8,0.015,1.0),
-          lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT:now, dtJitter:0, recvFps:0, lastSuggestT:0 };
-        p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
+        p = paddles[key] = {
+          // Roh-/EMA-Ziele
+          emaX: rawX, emaY: rawY, emaA: rawA,
+          // Anzeige (interpoliert)
+          x: rawX, y: rawY, a: rawA,
+          // Segmente
+          sx: rawX, sy: rawY, sa: rawA,
+          ex: rawX, ey: rawY, ea: rawA,
+          st: 0, sd: 33, // t und Dauer in ms
+          // Metriken
+          color: deviceColors[key],
+          lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT: nowRecv, dtJitter:0, recvFps:0, expectedFps:30, lastSuggestT:0
+        };
       } else {
+        // Netzmetriken
         p.recvCount++;
-        const dt = now - p.lastRecvT; p.lastRecvT = now;
-        const target = 1000/30;
+        const dt = nowRecv - p.lastRecvT; p.lastRecvT = nowRecv;
+        const target = 1000 / p.expectedFps;
         const j = Math.abs(dt - target);
         p.dtJitter = p.dtJitter ? (0.9*p.dtJitter + 0.1*j) : j;
 
         if (typeof seq === 'number') {
-          if (seq > p.lastSeq + 1) { const inc = (seq - p.lastSeq - 1); p.drops += inc; addLagRow(deviceId,'Drops',`+${inc}`,'Pakete übersprungen','warn'); }
+          if (seq > p.lastSeq + 1) { const inc = (seq - p.lastSeq - 1); p.drops += inc; addLagRow(keyLabel(key),'Drops',`+${inc}`,'Pakete übersprungen','warn'); }
           p.lastSeq = Math.max(p.lastSeq, seq);
         }
 
-        p.rawX=rawX; p.rawY=rawY; p.rawA=rawA; p.t=now;
-        if (flags & 1) { p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA); p.x=rawX; p.y=rawY; p.a=rawA; p.px=p.x; p.py=p.y; }
+        // --- Konstante EMA auf den Rohwerten ---
+        p.emaX += (rawX - p.emaX) * K_POS;
+        p.emaY += (rawY - p.emaY) * K_POS;
+        p.emaA  = angLerp(p.emaA, rawA, K_ANG);
+
+        // Bei Start-Flag: harte Synchronisierung
+        if (flags & 1) {
+          p.x = p.emaX = rawX;
+          p.y = p.emaY = rawY;
+          p.a = p.emaA = rawA;
+        }
+
+        // --- neues Interpolations-Segment (anti-Gap) ---
+        p.sx = p.x;     p.sy = p.y;     p.sa = p.a;       // Start ist aktuelle Anzeige
+        p.ex = p.emaX;  p.ey = p.emaY;  p.ea = p.emaA;    // Ziel ist geglättetes Ende
+        p.st = 0;
+        const dur = Math.max(SEG_DUR_MIN, Math.min(SEG_DUR_MAX, dt || 33));
+        p.sd = dur;
+
+        // Cap der impliziten Geschwindigkeit (gegen Sprünge)
+        const vx = (p.ex - p.sx) / (p.sd/1000);
+        const vy = (p.ey - p.sy) / (p.sd/1000);
+        const v = Math.hypot(vx, vy);
+        if (v > CLAMP_VEL) {
+          const s = CLAMP_VEL / v;
+          p.ex = p.sx + (p.ex - p.sx) * s;
+          p.ey = p.sy + (p.ey - p.sy) * s;
+        }
       }
 
-      // ACK → Control (für RTT), nur wenn seq vorhanden
-      if (typeof seq === 'number') socket.emit('draw-ack', { deviceId, seq });
+      // ACK → Control mit deviceKey
+      if (typeof seq === 'number') socket.emit('draw-ack', { deviceKey: key, seq });
     });
 
-    // Per Sekunde: FPS/Jitter prüfen + ggf. Rate-Vorschlag an Control
+    // Display → Control: Rate-Suggest (adaptiv zu Metriken)
     setInterval(()=>{
-      for(const id in paddles){
-        const p = paddles[id];
-        const fps = p.recvCount; p.recvFps=fps; p.recvCount=0;
+      for(const k in paddles){
+        const p = paddles[k];
+        const fps = p.recvCount; p.recvFps = fps; p.recvCount = 0;
 
-        if (fps && fps < RECV_FPS_MIN_BAD) addLagRow(id,'recv FPS',`${fps}`,'sehr niedrig','bad');
-        else if (fps && fps < RECV_FPS_MIN_WARN) addLagRow(id,'recv FPS',`${fps}`,'niedrig','warn');
+        const warnFps = Math.round(p.expectedFps*0.85);
+        const badFps  = Math.round(p.expectedFps*0.6);
 
-        if (p.dtJitter > JITTER_MAX_BAD) addLagRow(id,'Jitter',`${p.dtJitter.toFixed(1)} ms`,'stark schwankend','bad');
-        else if (p.dtJitter > JITTER_MAX_WARN) addLagRow(id,'Jitter',`${p.dtJitter.toFixed(1)} ms`,'schwankend','warn');
+        if (fps && fps < badFps)      addLagRow(keyLabel(k),'recv FPS',`${fps}`,'sehr niedrig','bad');
+        else if (fps && fps < warnFps) addLagRow(keyLabel(k),'recv FPS',`${fps}`,'niedrig','warn');
 
-        // Adaptiv vorschlagen: wenn dauerhaft unter 24fps oder starker Jitter -> 20fps, sonst 30fps
+        const warnJitter = (1000/p.expectedFps)*0.8;
+        const badJitter  = (1000/p.expectedFps)*1.4;
+
+        if (p.dtJitter > badJitter)      addLagRow(keyLabel(k),'Jitter',`${p.dtJitter.toFixed(1)} ms`,'stark schwankend','bad');
+        else if (p.dtJitter > warnJitter) addLagRow(keyLabel(k),'Jitter',`${p.dtJitter.toFixed(1)} ms`,'schwankend','warn');
+
         const now = performance.now();
         if (now - p.lastSuggestT > 2000) {
           let desired = 30;
-          if (fps < 24 || p.dtJitter > 35) desired = 20;
-          if (fps < 16 || p.dtJitter > 60) desired = 15;
-          socket.emit('rate-suggest', { deviceId: id, targetFps: desired });
+          if (fps < warnFps || p.dtJitter > warnJitter) desired = 20;
+          if (fps < badFps  || p.dtJitter > badJitter)  desired = 15;
+          if (desired !== p.expectedFps) {
+            p.expectedFps = desired;
+            socket.emit('rate-suggest', { deviceKey: (typeof k==='string'? Number.NaN : Number(k)), targetFps: desired });
+          }
           p.lastSuggestT = now;
         }
       }
     }, 1000);
 
-    socket.on('draw-end', ({deviceId})=> delete paddles[deviceId]);
-    socket.on('settings', s => { if(typeof s.paddleWidth==='number') paddleWidth=s.paddleWidth; });
+    socket.on('draw-end', ({deviceKey})=> delete paddles[deviceKey]);
 
-    function cleanup(now){ for(const id in paddles){ if(now - paddles[id].t > PTR_TTL) delete paddles[id]; } }
+    function cleanup(now){ for(const k in paddles){ if(now - paddles[k].lastRecvT > PTR_TTL) delete paddles[k]; } }
 
     function update(dt){
       if(!maskCtx) return;
       const now = performance.now();
       cleanup(now);
 
-      for(const id in paddles){
-        const p = paddles[id];
-        p.px=p.x; p.py=p.y;
-        p.x=p.fx.filter(p.rawX,dt);
-        p.y=p.fy.filter(p.rawY,dt);
-        p.a=p.fa.filter(p.rawA,dt);
+      // --- Segment-Interpolation (ohne dt-Abhängigkeit) ---
+      for(const k in paddles){
+        const p = paddles[k];
+        p.st += dt*1000;
+        const s = smoothstep(Math.min(1, p.st / p.sd));
+        p.x = p.sx + (p.ex - p.sx) * s;
+        p.y = p.sy + (p.ey - p.sy) * s;
+        p.a = angLerp(p.sa, p.ea, s);
       }
 
-      // Kollisionen
-      for(const id in paddles){
-        const p=paddles[id], u={x:Math.cos(p.a),y:Math.sin(p.a)}, L2=paddleLength*0.5;
-        const vx=ball.x-p.x, vy=ball.y-p.y;
-        let tProj=vx*u.x+vy*u.y; tProj=Math.max(-L2,Math.min(L2,tProj));
-        const qx=p.x+u.x*tProj, qy=p.y+u.y*tProj;
-        let nx=ball.x-qx, ny=ball.y-qy; const dist=Math.hypot(nx,ny);
-        const hitDist=ball.r+paddleWidth*0.5;
-        if(dist<=hitDist){
-          const d=dist||1; nx/=d; ny/=d;
-          const vDotN=ball.vx*nx+ball.vy*ny; if(vDotN<0){ ball.vx-=(1+RESTITUTION_PAD)*vDotN*nx; ball.vy-=(1+RESTITUTION_PAD)*vDotN*ny; }
-          const dvx=(p.x-p.px)/dt, dvy=(p.y-p.py)/dt; const ctrlN=(dvx*nx+dvy*ny); if(ctrlN>0){ ball.vx+=nx*ctrlN*CTRL_NORM_SCALE; ball.vy+=ny*ctrlN*CTRL_NORM_SCALE; }
-          const pen=hitDist-dist+1.0; ball.x+=nx*pen; ball.y+=ny*pen;
-          const tx=-ny, ty=nx; const tangential=ball.vx*tx+ball.vy*ty; ball.angularVelocity+=tangential*0.001;
+      // Paddle-Kollisionen (unverändert)
+      for(const k in paddles){
+        const p = paddles[k];
+        const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
+        const L2 = paddleLength * 0.5;
+
+        const vx = ball.x - p.x;
+        const vy = ball.y - p.y;
+        let tProj = vx*u.x + vy*u.y;
+        tProj = Math.max(-L2, Math.min(L2, tProj));
+        const qx = p.x + u.x * tProj;
+        const qy = p.y + u.y * tProj;
+
+        let nx = ball.x - qx;
+        let ny = ball.y - qy;
+        const dist = Math.hypot(nx, ny);
+        const hitDist = ball.r + paddleWidth*0.5;
+
+        if (dist <= hitDist) {
+          const d = dist || 1; nx/=d; ny/=d;
+          const vDotN = ball.vx*nx + ball.vy*ny;
+          if (vDotN < 0) { ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx; ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny; }
+          const pen = hitDist - dist + 1.0; ball.x += nx * pen; ball.y += ny * pen;
+          const tx = -ny, ty = nx; const tangential = ball.vx*tx + ball.vy*ty; ball.angularVelocity += tangential * 0.001;
         }
       }
 
-      ball.x+=ball.vx*dt; ball.y+=ball.vy*dt; ball.angle+=ball.angularVelocity*dt;
+      // Ballphysik
+      ball.x += ball.vx*dt; ball.y += ball.vy*dt; ball.angle += ball.angularVelocity*dt;
 
-      // Maskenkontakt
-      let correctionX=0,correctionY=0,hitCount=0;
+      // Masken-Kollision
+      let correctionX = 0, correctionY = 0, hitCount = 0;
       for(let i=0;i<16;i++){
-        const ang=i*(Math.PI*2/16); const ex=Math.round(ball.x+Math.cos(ang)*ball.r), ey=Math.round(ball.y+Math.sin(ang)*ball.r);
-        if(ex>=0&&ey>=0&&ex<maskCanvas.width&&ey<maskCanvas.height){
-          const d=maskCtx.getImageData(ex,ey,1,1).data; if(d[0]<200||d[1]<200||d[2]<200){const nx=Math.cos(ang),ny=Math.sin(ang); correctionX+=nx; correctionY+=ny; hitCount++; }
+        const ang = i*(Math.PI*2/16);
+        const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
+        const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
+        if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
+          const d = maskCtx.getImageData(ex,ey,1,1).data;
+          if(d[0]<200 || d[1]<200 || d[2]<200){ const nx = Math.cos(ang); const ny = Math.sin(ang); correctionX += nx; correctionY += ny; hitCount++; }
         }
       }
-      if(hitCount>0){ correctionX/=hitCount; correctionY/=hitCount; const vDotN=ball.vx*correctionX+ball.vy*correctionY;
-        ball.vx-=2*vDotN*correctionX; ball.vy-=2*vDotN*correctionY; ball.x+=correctionX*2; ball.y+=correctionY*2; }
+      if (hitCount > 0) {
+        correctionX/=hitCount; correctionY/=hitCount;
+        const vDotN = ball.vx*correctionX + ball.vy*correctionY;
+        ball.vx -= 2*vDotN*correctionX; ball.vy -= 2*vDotN*correctionY;
+        ball.x += correctionX * 2; ball.y += correctionY * 2;
+      }
 
-      if(ball.x-ball.r<0){ball.x=ball.r;ball.vx*=-BOUNCE;ball.angularVelocity*=-1;}
-      if(ball.x+ball.r>canvas.width){ball.x=canvas.width-ball.r;ball.vx*=-BOUNCE;ball.angularVelocity*=-1;}
-      if(ball.y-ball.r<0){ball.y=ball.r;ball.vy*=-BOUNCE;ball.angularVelocity*=-1;}
-      if(ball.y+ball.r>canvas.height){ball.y=canvas.height-ball.r;ball.vy*=-BOUNCE;ball.angularVelocity*=-1;}
+      // Canvas-Grenzen
+      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
 
-      ball.vx*=FRICTION; ball.vy*=FRICTION; ball.angularVelocity*=ANGULAR_FRICTION;
+      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
 
-      const lines=[]; for(const id in paddles){const p=paddles[id]; lines.push(`${id.slice(0,6)} | fps≈${p.recvFps??'…'} | jitter≈${p.dtJitter?.toFixed(1)??'…'}ms | drops=${p.drops}`);} metricsBox.textContent=lines.length?lines.join('\n'):'Warten auf Controller…';
+      // Kurzmetrics
+      const lines=[];
+      for(const k in paddles){
+        const p = paddles[k];
+        lines.push(`${keyLabel(k)} | fps≈${p.recvFps ?? '…'} | jitter≈${p.dtJitter?.toFixed(1) ?? '…'}ms | drops=${p.drops}`);
+      }
+      metricsBox.textContent = lines.length ? lines.join('\n') : 'Warten auf Controller…';
     }
 
     function draw(){
-      if(bgImage.complete){const bx=(canvas.width-bgImage.width)/2, by=(canvas.height-bgImage.height)/2; ctx.drawImage(bgImage,bx,by);} else {ctx.clearRect(0,0,canvas.width,canvas.height);}
+      if(bgImage.complete){ const bx=(canvas.width-bgImage.width)/2, by=(canvas.height-bgImage.height)/2; ctx.drawImage(bgImage,bx,by); }
+      else { ctx.clearRect(0,0,canvas.width,canvas.height); }
+
+      // Ball-Schatten
       ctx.save(); ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=15; ctx.shadowOffsetX=-15; ctx.shadowOffsetY=15;
-      ctx.beginPath(); ctx.arc(ball.x,ball.y,ball.r,0,Math.PI*2); ctx.fillStyle='rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
-      if(ballBase.complete){ctx.save();ctx.translate(ball.x,ball.y);ctx.rotate(ball.angle);ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);ctx.restore();}
-      if(ballShadow.complete){ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);}
-      for(const id in paddles){const p=paddles[id]; ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.a); ctx.fillStyle=p.color||'#fff';
-        ctx.beginPath(); const L=paddleLength,W=paddleWidth,r=W/2; ctx.moveTo(-L/2,-r); ctx.lineTo(L/2,-r); ctx.arc(L/2,0,r,-Math.PI/2,Math.PI/2);
-        ctx.lineTo(-L/2,r); ctx.arc(-L/2,0,r,Math.PI/2,-Math.PI/2); ctx.closePath(); ctx.fill(); ctx.restore();}
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fillStyle='rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
+
+      // Ball
+      if(ballBase.complete){ ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle); ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore(); }
+      if(ballShadow.complete){ ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2); }
+
+      // Paddles (rounded rectangle)
+      for(const k in paddles){
+        const p = paddles[k];
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.a);
+        ctx.fillStyle = p.color || '#fff';
+        ctx.beginPath();
+        const L=paddleLength, W=paddleWidth, r=W/2;
+        ctx.moveTo(-L/2,-r); ctx.lineTo(L/2,-r); ctx.arc(L/2,0,r,-Math.PI/2,Math.PI/2);
+        ctx.lineTo(-L/2,r);  ctx.arc(-L/2,0,r,Math.PI/2,-Math.PI/2);
+        ctx.closePath(); ctx.fill();
+        ctx.restore();
+      }
     }
 
-    let last=performance.now(); (function loop(now){const dt=(now-last)/1000; last=now; update(dt); draw(); requestAnimationFrame(loop);})(last);
+    let last=performance.now();
+    (function loop(now){
+      const dt=(now-last)/1000; last=now;
+      update(dt); draw();
+      requestAnimationFrame(loop);
+    })(last);
   </script>
 </body>
 </html>
