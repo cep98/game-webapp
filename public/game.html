@@ -3,15 +3,23 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (Paddle + Kantenfix)</title>
+  <title>Game Display mit Hindernissen (v2.1)</title>
   <style>
-    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
-    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; }
-    canvas { display:block; }
+    html, body {
+      margin:0; padding:0; width:100%; height:100%;
+      background:#000; overflow:hidden;
+    }
+    #version {
+      position:absolute; top:10px; left:10px;
+      color:#fff; opacity:0.6; font-size:0.9em;
+    }
+    canvas {
+      display:block; margin:0 auto; background:#000;
+    }
   </style>
 </head>
 <body>
-  <div id="version"></div>
+  <div id="version">v2.1 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -19,17 +27,16 @@
     const socket = io();
     socket.on('connect', () => {
       socket.emit('identify',{ role:'display', deviceId: socket.id });
-      socket.emit('request-settings');
     });
 
-    const canvas = document.getElementById('gameCanvas');
-    const ctx    = canvas.getContext('2d');
+    const canvas = document.getElementById('gameCanvas'),
+          ctx    = canvas.getContext('2d');
     let maskCanvas, maskCtx;
 
-    const bgImage    = new Image();
-    const maskImage  = new Image();
-    const ballBase   = new Image();
-    const ballShadow = new Image();
+    const bgImage    = new Image(),
+          maskImage  = new Image(),
+          ballBase   = new Image(),
+          ballShadow = new Image();
 
     bgImage.src    = '/background.png';
     maskImage.src  = '/mask.png';
@@ -37,358 +44,171 @@
     ballShadow.src = '/ball-shadow.png';
 
     let loaded=0;
-    [bgImage, maskImage].forEach(img=>{
-      img.onload = ()=>{
+    [bgImage, maskImage].forEach(img => {
+      img.onload = () => {
         if (++loaded === 2) {
-          // exakt wie Original: Canvas = Maskengröße, BG später mittig gezeichnet
           canvas.width  = maskImage.width;
           canvas.height = maskImage.height;
-
-          maskCanvas = document.createElement('canvas');
+          maskCanvas    = document.createElement('canvas');
           maskCanvas.width  = maskImage.width;
           maskCanvas.height = maskImage.height;
           maskCtx = maskCanvas.getContext('2d');
           maskCtx.drawImage(maskImage,0,0);
-
           ball.x = canvas.width/2;
           ball.y = canvas.height/2;
         }
       };
     });
 
-    let smoothing = 0.5;
-    const FRICTION         = 0.995;
-    const ANGULAR_FRICTION = 0.95;
-    const BOUNCE_WALL      = 0.75; // Rand
-    const PTR_TTL          = 500;
+    const FRICTION = 0.985;
+    const BOUNCE   = 0.8;
+    const PTR_R    = 16;
 
-    // Paddle-Parameter (ruhig & kontrolliert)
-    const PADDLE_LEN   = 120;
-    const PADDLE_THICK = 14;
-    const RESTITUTION  = 0.55;   // Reflexion am Paddle (px/Frame)
-    const MAX_REL_N_FR = 12;     // Clamp der rel. Normalgeschw. (px/Frame)
-    const SPIN_K       = 0.0005;
-    const SLOP_PADDLE  = 0.2;
+    let ball = { x:0, y:0, vx:0, vy:0, r:20 };
 
-    // Masken-/Wandkollision
-    const SOLID_IS_WHITE = true; // Weiß = Wand (verboten)
-    const WHITE_THR      = 230;  // 0..255
-    const SAMPLE_POINTS  = 32;   // Umfangsabtastung
-    const SUBSTEP_MAX    = 8;    // Integrations-Substeps
-    const BISECT_ITERS   = 8;    // Zeit-des-Kontakts
-    const SEP_BIAS       = 0.35; // minimale Abhebegeschwindigkeit entlang Normale (px/Frame)
-    const PUSH_EPS       = 1.0;  // kleine Trennung nach Kontakt (px)
-
-    let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
-
-    const pointers     = {};
+    const pointers = {};
     const deviceColors = {};
-    const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
-    let colorIndex=0;
+    const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231'];
+    let colorIndex = 0;
 
-    socket.on('draw', ({x,y,rot,deviceId,color})=>{
-      if (!canvas.width) return;
-      const now  = performance.now();
-      const rawX = x * canvas.width;
-      const rawY = y * canvas.height;
+    const particles = [];
+    function spawnParticles(x, y, color, count = 4) {
+      for (let i = 0; i < count; i++) {
+        const angle = Math.random() * 2 * Math.PI;
+        const speed = 1 + Math.random() * 1.5;
+        particles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed,
+          alpha: 1,
+          color,
+          sparkle: Math.random() * 30 + 10,
+          t: 0
+        });
+      }
+    }
+    function updateParticles(dt) {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.t += dt;
+        p.alpha -= 0.025 * dt;
+        if (p.alpha <= 0) particles.splice(i, 1);
+      }
+    }
 
+    socket.on('motion', ({ x, y, deviceId, color }) => {
+      if (!color && !deviceColors[deviceId]) {
+        deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
+      }
       if (color) deviceColors[deviceId] = color;
-      else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
-
-      const prev = pointers[deviceId];
-      if (prev) {
-        const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
-        const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
-
-        const rotPrev = prev.rot ?? 0;
-        let d = (rot ?? 0) - rotPrev; d = ((d + Math.PI) % (2*Math.PI)) - Math.PI; // shortest wrap
-        const rotSmoothed = rotPrev + d*(1-smoothing);
-
-        pointers[deviceId] = {
-          sx, sy, px: prev.sx, py: prev.sy,
-          rot: rotSmoothed, prot: prev.rot ?? rotSmoothed,
-          t: now, pt: prev.pt
-        };
-      } else {
-        pointers[deviceId] = {
-          sx: rawX, sy: rawY, px: rawX, py: rawY,
-          rot: rot || 0, prot: rot || 0,
-          t: now, pt: now
-        };
-      }
+      pointers[deviceId] = { x, y };
     });
-    socket.on('draw-end', ({deviceId})=> delete pointers[deviceId]);
-    socket.on('settings', data=> smoothing = data.smoothing);
 
-    function cleanup(now){
-      for (let id in pointers){
-        if (now - pointers[id].t > PTR_TTL) delete pointers[id];
-      }
-    }
-    function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
-
-    // ----------- Masken-Helfer -----------
-    function getRGB(x,y){
-      if (x<0 || y<0 || x>=maskCanvas.width || y>=maskCanvas.height) return [255,255,255];
-      const d = maskCtx.getImageData(x|0, y|0, 1, 1).data;
-      return [d[0], d[1], d[2]];
-    }
-    function whiteness01At(x,y){
-      const [r,g,b] = getRGB(x,y);
-      return (r+g+b)/ (3*255);
-    }
-    function isSolidPixel(x,y){
-      const [r,g,b] = getRGB(x,y);
-      if (SOLID_IS_WHITE) {
-        return (r >= WHITE_THR && g >= WHITE_THR && b >= WHITE_THR);
-      } else {
-        return (r < WHITE_THR || g < WHITE_THR || b < WHITE_THR);
-      }
-    }
-    // Umfangsprüfung: berührt der Kreis irgendwo „solid“?
-    function circleTouchesSolid(x,y,r){
-      const step = (Math.PI*2)/SAMPLE_POINTS;
-      for (let i=0;i<SAMPLE_POINTS;i++){
-        const ang = i*step;
-        const px = Math.round(x + Math.cos(ang)*r);
-        const py = Math.round(y + Math.sin(ang)*r);
-        if (isSolidPixel(px,py)) return true;
-      }
-      return false;
-    }
-    // Normale **weg von Weiß** via Sobel am Randpunkt (Fallback: Umfangsnormal)
-    function normalAwayFromWhite(contactX, contactY, approxNx, approxNy, r){
-      // Randpunkt näherungsweise am Kreisumfang
-      let bx = contactX + (approxNx||0) * r;
-      let by = contactY + (approxNy||0) * r;
-
-      // Sobel auf Whiteness in 3x3 um (bx,by)
-      const x = Math.round(bx), y = Math.round(by);
-      const w00 = whiteness01At(x-1,y-1), w01 = whiteness01At(x,y-1), w02 = whiteness01At(x+1,y-1);
-      const w10 = whiteness01At(x-1,y  ), w11 = whiteness01At(x,y  ), w12 = whiteness01At(x+1,y  );
-      const w20 = whiteness01At(x-1,y+1), w21 = whiteness01At(x,y+1), w22 = whiteness01At(x+1,y+1);
-
-      // Gradient Richtung „heller“ (weiß)
-      const gx = (-1*w00 + 1*w02) + (-2*w10 + 2*w12) + (-1*w20 + 1*w22);
-      const gy = (-1*w00 -2*w01 -1*w02) + ( 1*w20 + 2*w21 + 1*w22);
-
-      // Normale **weg von weiß** = -grad(whiteness)
-      let nx = -gx, ny = -gy;
-      let len = Math.hypot(nx,ny);
-
-      if (len < 1e-3) {
-        // Fallback: Umfangs-Summen-Normale (wie vorher)
-        let sx=0, sy=0, cnt=0;
-        const step = (Math.PI*2)/SAMPLE_POINTS;
-        for (let i=0;i<SAMPLE_POINTS;i++){
-          const ang = i*step;
-          const px = Math.round(contactX + Math.cos(ang)*r);
-          const py = Math.round(contactY + Math.sin(ang)*r);
-          if (isSolidPixel(px,py)){ sx += Math.cos(ang); sy += Math.sin(ang); cnt++; }
-        }
-        if (cnt>0) { nx = -sx; ny = -sy; len = Math.hypot(nx,ny); }
-      }
-
-      if (len < 1e-6) {
-        // letzter Sicherheitsfallback: benutze angenäherte Normale
-        nx = approxNx || 0; ny = approxNy || 0; len = Math.hypot(nx,ny) || 1;
-      }
-      return { nx: nx/len, ny: ny/len };
-    }
-
-    // ----------- Paddle: Kreis vs. gedrehtes Rechteck -----------
-    function circleRectCollision(ballX, ballY, rectX, rectY, angle, halfLen, halfThick, radius){
-      const ca = Math.cos(angle), sa = Math.sin(angle);
-      const tx = ca,  ty = sa;   // Längsachse
-      const nx = -sa, ny = ca;   // Normalachse
-      const rx = ballX - rectX, ry = ballY - rectY;
-      const u = rx*tx + ry*ty;
-      const v = rx*nx + ry*ny;
-      const cu = Math.max(-halfLen, Math.min(halfLen, u));
-      const cv = Math.max(-halfThick, Math.min(halfThick, v));
-      const du = u - cu, dv = v - cv;
-      const dist2 = du*du + dv*dv;
-      if (dist2 > radius*radius) return null;
-      const dist = Math.sqrt(dist2) || 1;
-      const nwx = (du*tx + dv*nx) / dist;
-      const nwy = (du*ty + dv*ny) / dist;
-      return { nwx, nwy, cu, cv, penetration: radius - dist, tx, ty, nx, ny };
-    }
-
-    function update(dt){
-      if(!maskCtx) return;
-      cleanup(performance.now());
-
-      // ---------- Paddle-Kollision (px/Frame) ----------
-      for(let id in pointers){
+    function update(dt) {
+      updateParticles(dt);
+      for (let id in pointers) {
         const p = pointers[id];
-        const dx = p.sx - p.px, dy = p.sy - p.py; // px/Frame
-        const dtMs = Math.max(p.t - p.pt, 1);
-
-        // „closest approach“ des Paddle-Zentrums auf seinem Weg px→sx
-        const abx = dx, aby = dy; const ab2 = abx*abx + aby*aby;
-        let cpX = p.sx, cpY = p.sy, lerpT = 1;
-        if (ab2 > 0){
-          const apx = ball.x - p.px, apy = ball.y - p.py;
-          let t = (apx*abx + apy*aby) / ab2; t = clamp(t,0,1);
-          cpX = p.px + abx*t; cpY = p.py + aby*t; lerpT = t;
-        }
-        // Winkel entlang des Weges (shortest)
-        let dAng = (p.rot - p.prot); dAng = ((dAng + Math.PI) % (2*Math.PI)) - Math.PI;
-        const angAtCp = p.prot + dAng * lerpT;
-
-        const halfLen   = PADDLE_LEN*0.5;
-        const halfThick = PADDLE_THICK*0.5;
-
-        const hit = circleRectCollision(ball.x, ball.y, cpX, cpY, angAtCp, halfLen, halfThick, ball.r);
-        if (hit){
-          const { nwx, nwy, cu, cv, tx, ty, nx, ny, penetration } = hit;
-
-          // Kontaktpunktgeschwindigkeit (px/Frame): Zentrum + Rotation
-          const vCenterX_fr = dx;
-          const vCenterY_fr = dy;
-          const rpx = tx*cu + nx*cv, rpy = ty*cu + ny*cv;
-          const angVel_fr = dAng;            // rad/Frame
-          const vRotX_fr  = -angVel_fr * rpy;
-          const vRotY_fr  =  angVel_fr * rpx;
-          const vPx = vCenterX_fr + vRotX_fr;
-          const vPy = vCenterY_fr + vRotY_fr;
-
-          // relative Geschwindigkeit (px/Frame)
-          const rvx = ball.vx - vPx;
-          const rvy = ball.vy - vPy;
-
-          let vRelN = rvx*nwx + rvy*nwy; // <0 = Annäherung
-          if (vRelN < 0){
-            vRelN = Math.max(vRelN, -MAX_REL_N_FR);   // kein „Kanonen“-Effekt
-            const impulse = -(1 + RESTITUTION) * vRelN;
-            ball.vx += impulse * nwx;
-            ball.vy += impulse * nwy;
-
-            // Spin aus Tangente
-            const twx = -nwy, twy = nwx;
-            const vRelT = rvx*twx + rvy*twy;
-            ball.angularVelocity += (-vRelT) * SPIN_K;
-          }
-
-          // aus dem Paddle heraus
-          ball.x += nwx * (penetration + SLOP_PADDLE);
-          ball.y += nwy * (penetration + SLOP_PADDLE);
-
-          p.pt = p.t;
+        const px = p.x * canvas.width;
+        const py = p.y * canvas.height;
+        const dx = px - ball.x;
+        const dy = py - ball.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < PTR_R + ball.r) {
+          const nx = dx / dist;
+          const ny = dy / dist;
+          ball.vx += nx * 0.5;
+          ball.vy += ny * 0.5;
+          spawnParticles(ball.x + nx * ball.r, ball.y + ny * ball.r, deviceColors[id]);
         }
       }
 
-      // ---------- Integration + robuste Masken-Kante ----------
-      let moveX = ball.vx * dt;
-      let moveY = ball.vy * dt;
-      let substeps = Math.ceil(Math.hypot(moveX, moveY) / (ball.r * 0.5));
-      substeps = clamp(substeps, 1, SUBSTEP_MAX);
-
-      const stepX = moveX / substeps;
-      const stepY = moveY / substeps;
-
-      for (let s=0; s<substeps; s++){
-        const startX = ball.x, startY = ball.y;
-        const targetX = startX + stepX;
-        const targetY = startY + stepY;
-
-        if (!circleTouchesSolid(targetX, targetY, ball.r)) {
-          ball.x = targetX; ball.y = targetY;
-          continue;
-        }
-
-        // Zeit des Kontakts via Bisection auf [0,1]
-        let lo = 0, hi = 1;
-        for (let i=0;i<BISECT_ITERS;i++){
-          const mid = (lo+hi)/2;
-          const mx = startX + stepX*mid;
-          const my = startY + stepY*mid;
-          if (circleTouchesSolid(mx, my, ball.r)) hi = mid; else lo = mid;
-        }
-        // an erlaubte Seite setzen
-        ball.x = startX + stepX*lo;
-        ball.y = startY + stepY*lo;
-
-        // Grobe Normale über Umfang, dann präzise Sobel-Normale am Rand
-        let sx=0, sy=0, cnt=0, step = (Math.PI*2)/SAMPLE_POINTS;
-        for (let i=0;i<SAMPLE_POINTS;i++){
-          const ang = i*step;
-          const px = Math.round(ball.x + Math.cos(ang)*ball.r);
-          const py = Math.round(ball.y + Math.sin(ang)*ball.r);
-          if (isSolidPixel(px,py)){ sx += Math.cos(ang); sy += Math.sin(ang); cnt++; }
-        }
-        let approxNx = cnt? -sx/Math.hypot(sx,sy) : 0;
-        let approxNy = cnt? -sy/Math.hypot(sx,sy) : 0;
-
-        const { nx, ny } = normalAwayFromWhite(ball.x, ball.y, approxNx, approxNy, ball.r);
-
-        // minimal nach außen schieben
-        ball.x += nx * PUSH_EPS;
-        ball.y += ny * PUSH_EPS;
-
-        // Geschwindigkeit so anpassen, dass wir **weg** von weiß gehen
-        let vDotN = ball.vx*nx + ball.vy*ny;
-        if (vDotN < SEP_BIAS) {
-          // Anteil zur Erreichung von SEP_BIAS addieren
-          const add = (SEP_BIAS - vDotN);
-          ball.vx += add * nx;
-          ball.vy += add * ny;
-        }
-      }
-
-      // ---------- Ränder ----------
-      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
-      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
-      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
-      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE_WALL; ball.angularVelocity*=-1; }
-
-      // Dämpfung
       ball.vx *= FRICTION;
       ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
+      ball.x += ball.vx * dt;
+      ball.y += ball.vy * dt;
+
+      // Maskenkollision
+      let correctionX = 0, correctionY = 0, hitCount = 0;
+      for (let i = 0; i < 16; i++) {
+        const ang = i * (Math.PI * 2 / 16);
+        const ex = Math.round(ball.x + Math.cos(ang) * ball.r);
+        const ey = Math.round(ball.y + Math.sin(ang) * ball.r);
+        if (ex >= 0 && ey >= 0 && ex < maskCanvas.width && ey < maskCanvas.height) {
+          const d = maskCtx.getImageData(ex, ey, 1, 1).data;
+          if (d[0] < 200 || d[1] < 200 || d[2] < 200) {
+            const nx = Math.cos(ang);
+            const ny = Math.sin(ang);
+            correctionX += nx;
+            correctionY += ny;
+            hitCount++;
+          }
+        }
+      }
+
+      if (hitCount > 0) {
+        correctionX /= hitCount;
+        correctionY /= hitCount;
+        const vDotN = ball.vx * correctionX + ball.vy * correctionY;
+        if (vDotN < 0) {
+          ball.vx -= 2 * vDotN * correctionX;
+          ball.vy -= 2 * vDotN * correctionY;
+          ball.x += correctionX * 1.5;
+          ball.y += correctionY * 1.5;
+        }
+      }
+
+      if (ball.x - ball.r < 0) { ball.x = ball.r; ball.vx *= -BOUNCE; }
+      if (ball.x + ball.r > canvas.width) { ball.x = canvas.width - ball.r; ball.vx *= -BOUNCE; }
+      if (ball.y - ball.r < 0) { ball.y = ball.r; ball.vy *= -BOUNCE; }
+      if (ball.y + ball.r > canvas.height) { ball.y = canvas.height - ball.r; ball.vy *= -BOUNCE; }
     }
 
-    function draw(){
-      // Hintergrund mittig – keine Skalierung
-      if(bgImage.complete){
-        const bx=(canvas.width-bgImage.width)/2;
-        const by=(canvas.height-bgImage.height)/2;
-        ctx.drawImage(bgImage,bx,by);
-      } else ctx.clearRect(0,0,canvas.width,canvas.height);
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(bgImage, 0, 0);
 
-      // Schlagschatten
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-      ctx.shadowBlur = 15; ctx.shadowOffsetX = -15; ctx.shadowOffsetY = 15;
-      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
-      ctx.fillStyle = 'rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
+      ctx.shadowBlur = 15;
+      ctx.shadowOffsetX = -15;
+      ctx.shadowOffsetY = 15;
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0,0,0,1)';
+      ctx.fill();
+      ctx.restore();
 
-      // Ball-Graphics
-      if(ballBase.complete){
-        ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle);
-        ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore();
-      }
-      if(ballShadow.complete){
-        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
+      ctx.drawImage(ballBase, ball.x - ball.r, ball.y - ball.r, ball.r * 2, ball.r * 2);
+      ctx.drawImage(ballShadow, ball.x - ball.r, ball.y - ball.r, ball.r * 2, ball.r * 2);
+
+      for (let id in pointers) {
+        const p = pointers[id];
+        ctx.beginPath();
+        ctx.fillStyle = deviceColors[id];
+        ctx.arc(p.x * canvas.width, p.y * canvas.height, PTR_R, 0, 2 * Math.PI);
+        ctx.fill();
       }
 
-      // Paddle zeichnen
-      for(let id in pointers){
-        const p = pointers[id]; const col = deviceColors[id] || '#fff';
-        ctx.save(); ctx.translate(p.sx, p.sy); ctx.rotate(p.rot || 0);
-        ctx.fillStyle = col;
-        if (ctx.roundRect) { ctx.beginPath(); ctx.roundRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK, PADDLE_THICK/2); ctx.fill(); }
-        else { ctx.fillRect(-PADDLE_LEN/2, -PADDLE_THICK/2, PADDLE_LEN, PADDLE_THICK); }
-        ctx.restore();
+      for (const p of particles) {
+        ctx.beginPath();
+        ctx.globalAlpha = p.alpha;
+        ctx.fillStyle = Math.floor(p.t) % p.sparkle < p.sparkle / 2 ? p.color : '#fff';
+        ctx.arc(p.x, p.y, 2, 0, 2 * Math.PI);
+        ctx.fill();
       }
+      ctx.globalAlpha = 1.0;
     }
 
-    let last=performance.now();
-    (function loop(now){
-      const dt=(now-last)/16.67; last=now;
-      update(dt); draw(); requestAnimationFrame(loop);
-    })(last);
+    let last = performance.now();
+    requestAnimationFrame(function loop(now) {
+      const dt = (now - last) / 16.67;
+      last = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    });
   </script>
 </body>
 </html>
