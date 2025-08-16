@@ -1,91 +1,127 @@
-// server.js
+// v2.0 Server – Paddle-Line + Rotation (alpha/beta/gamma)
+const path = require('path');
 const express = require('express');
-const path    = require('path');
-const app     = express();
-const http    = require('http').createServer(app);
-const io      = require('socket.io')(http);
+const app = express();
+const server = require('http').createServer(app);
+const { Server } = require('socket.io');
+const io = new Server(server, {
+  cors: { origin: '*' }
+});
 
-// Statische Auslieferung aus /public
-app.use(express.static(path.join(__dirname, 'public')));
+const PORT = process.env.PORT || 3000;
 
-// Defaults für Settings
+app.use(express.static(path.join(__dirname)));
+
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'game.html')));
+app.get('/control', (req, res) => res.sendFile(path.join(__dirname, 'control.html')));
+app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
+
+// ---------- State ----------
+const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#008080','#9a6324','#800000','#469990'];
+let colorIndex = 0;
+
+const clients = new Map(); // socketId -> { socket, type, deviceId, ip, color }
 let settings = {
-  maxHor:    20,
-  maxVer:    20,
-  smoothing: 0.5
+  maxHor: 20,       // Grad (links/rechts)
+  maxVer: 20,       // Grad (vor/zurück)
+  smoothing: 0.5,   // 0..1 (wie gehabt, 0 = keine Glättung)
+  paddleLength: 240, // px
+  paddleWidth: 14    // px
 };
 
-// Farbpalette für Controls
-const COLORS = [
-  '#e6194b', '#3cb44b', '#ffe119', '#4363d8',
-  '#f58231', '#911eb4', '#46f0f0', '#f032e6'
-];
-
-// Tracking aller Clients
-const clients      = {};  // socketId → { role, deviceId, color? }
-let controlCount   = 0;
-
-// Client‑Liste an Admins senden
-function sendClientList() {
-  const list = Object.entries(clients).map(([id, { role, deviceId, color }]) => ({
-    socketId: id,
-    type:     role,
-    deviceId: deviceId || 'n/a',
-    ip:       io.sockets.sockets.get(id)?.handshake.address || '–',
-    color:    color || null
-  }));
-  for (let [id, c] of Object.entries(clients)) {
-    if (c.role === 'admin') {
-      io.to(id).emit('client-list', list);
-    }
+function broadcastClientList() {
+  const list = [];
+  for (const [socketId, c] of clients.entries()) {
+    list.push({
+      socketId,
+      type: c.type,
+      deviceId: c.deviceId || '',
+      ip: c.ip || '',
+      color: c.color || null
+    });
+  }
+  // Nur an Admins senden
+  for (const [_, c] of clients.entries()) {
+    if (c.type === 'admin') c.socket.emit('client-list', list);
   }
 }
 
-io.on('connection', socket => {
-  // Identifikation
+function assignColor() {
+  const color = COLORS[colorIndex % COLORS.length];
+  colorIndex++;
+  return color;
+}
+
+// ---------- Socket.IO ----------
+io.on('connection', (socket) => {
+  const ip = socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim() || socket.handshake.address;
+
+  // Platzhalter in Map
+  clients.set(socket.id, { socket, type: 'unknown', deviceId: null, ip, color: null });
+
   socket.on('identify', ({ role, deviceId }) => {
-    let color = null;
-    if (role === 'control') {
-      color = COLORS[controlCount % COLORS.length];
-      controlCount++;
-      socket.emit('assign-color', color);
+    const entry = clients.get(socket.id);
+    if (!entry) return;
+    entry.type = role || 'unknown';
+    entry.deviceId = deviceId || socket.id;
+
+    if (entry.type === 'control') {
+      // Farbe zuteilen und an Control schicken
+      entry.color = assignColor();
+      socket.emit('assign-color', entry.color);
     }
-    clients[socket.id] = { role, deviceId, color };
-    sendClientList();
+    // Frische Liste an Admins
+    broadcastClientList();
   });
 
-  // Admin‑Settings
-  socket.on('request-settings', () => socket.emit('settings', settings));
-  socket.on('update-settings', data => {
-    settings = { ...settings, ...data };
-    for (let [id, c] of Object.entries(clients)) {
-      if (c.role === 'display') io.to(id).emit('settings', settings);
+  socket.on('request-settings', () => {
+    socket.emit('settings', settings);
+  });
+
+  socket.on('update-settings', (data) => {
+    const entry = clients.get(socket.id);
+    if (!entry || entry.type !== 'admin') return; // nur Admin
+    settings = {
+      ...settings,
+      ...Object.fromEntries(Object.entries(data).filter(([_, v]) => v !== undefined))
+    };
+    // An alle senden
+    io.emit('settings', settings);
+  });
+
+  socket.on('draw', (payload) => {
+    // Durchreichen an alle Displays
+    for (const [_, c] of clients.entries()) {
+      if (c.type === 'display') {
+        c.socket.emit('draw', payload);
+      }
     }
   });
 
-  // Draw‑Events weiterleiten
-  socket.on('draw',     data => socket.broadcast.emit('draw', data));
-  socket.on('draw-end', data => socket.broadcast.emit('draw-end', data));
+  socket.on('draw-end', (payload) => {
+    for (const [_, c] of clients.entries()) {
+      if (c.type === 'display') {
+        c.socket.emit('draw-end', payload);
+      }
+    }
+  });
 
-  // Admin: Client kicken
   socket.on('kill-client', ({ socketId }) => {
-    const me = clients[socket.id];
-    if (!me || me.role !== 'admin') return;
-    if (clients[socketId]) {
-      const target = io.sockets.sockets.get(socketId);
-      if (target) target.disconnect(true);
-      delete clients[socketId];
-      sendClientList();
-    }
+    const entry = clients.get(socket.id);
+    if (!entry || entry.type !== 'admin') return;
+    const victim = clients.get(socketId);
+    if (victim) victim.socket.disconnect(true);
   });
 
-  // Disconnect
   socket.on('disconnect', () => {
-    delete clients[socket.id];
-    sendClientList();
+    clients.delete(socket.id);
+    broadcastClientList();
   });
+
+  // Beim Connect direkt Settings schicken (für schnelle Anzeige)
+  socket.emit('settings', settings);
 });
 
-// Server starten
-const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => console.log(`Listening on port ${PORT}`));
+server.listen(PORT, () => {
+  console.log('Server running on port', PORT);
+});
