@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Control</title>
+  <title>Control v2.2</title>
   <style>
     html, body {
       margin:0; padding:0; height:100%; background:#222;
@@ -26,7 +26,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v1.7 Control</div>
+  <div id="version">v2.2 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
@@ -40,17 +40,15 @@
     let zeroA = 0, zeroB = 0, lastAlpha = 0, lastBeta = 0;
 
     socket.on('connect', () => {
-      socket.emit('identify',      { role:'control', deviceId: socket.id });
+      socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    // Farbe vom Server bekommen, aber Button erst nach Permission zeigen
     socket.on('assign-color', color => {
       myColor = color;
       laserBtn.style.borderColor = myColor;
     });
 
-    // Gyro-Button: nach Permission Laser-Button anzeigen
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
@@ -58,32 +56,35 @@
           return alert('Gyroskop‑Zugriff benötigt!');
         }
       }
-      // Wenn Farbe schon da ist, direkt wechseln
       if (myColor) {
         gyroBtn.style.display  = 'none';
         laserBtn.style.display = 'block';
       }
     });
 
-    // Laser starten
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
-      zeroA = lastAlpha; zeroB = lastBeta;
-    }, { passive:false });
+      zeroA = lastAlpha;
+      zeroB = lastBeta;
+    }, { passive: false });
 
-    // Laser stoppen
     laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
       drawing = false;
       socket.emit('draw-end', { deviceId: socket.id });
-    }, { passive:false });
+    }, { passive: false });
 
     window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha; lastBeta = ev.beta;
+      lastAlpha = ev.alpha;
+      lastBeta = ev.beta;
       if (!drawing) return;
-      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
-      let dB = lastBeta  - zeroB;
+
+      let dA = lastAlpha - zeroA;
+      if (dA > 180) dA -= 360;
+      if (dA < -180) dA += 360;
+      let dB = lastBeta - zeroB;
+
       const maxHor = 20, maxVer = 20;
       dA = Math.max(-maxHor, Math.min(maxHor, dA));
       dB = Math.max(-maxVer, Math.min(maxVer, dB));
