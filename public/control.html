@@ -25,7 +25,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.1.4 Control</div>
+  <div id="version">v2.2.3 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
 
@@ -45,37 +45,41 @@
   <script>
     class OneEuroFilter{constructor(m=1.2,b=0.03,d=1){this.minCutoff=m;this.beta=b;this.dCutoff=d;this.xHat=null;this.dxHat=0;}
       alpha(fc,dt){const tau=1/(2*Math.PI*fc);return 1/(1+tau/dt);} filter(x,dt){if(dt<=0||!isFinite(dt))dt=1/60;
-      if(this.xHat===null){this.xHat=x;this.dxHat=0;return x;} const dx=(x-this.xHat)/dt,aD=this.alpha(this.dCutoff,dt);
-      this.dxHat=aD*dx+(1-aD)*this.dxHat; const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat),aX=this.alpha(cutoff,dt);
-      this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat;} reset(x){this.xHat=x;this.dxHat=0;}}
+      if(this.xHat===null){this.xHat=x;this.dxHat=0;return x;} const dx=(x-this.xHat)/dt,aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat;
+      const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat),aX=this.alpha(cutoff,dt); this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat;} reset(x){this.xHat=x;this.dxHat=0;}}
 
     const socket = io({ transports:['websocket'], upgrade:false });
 
     const gyroBtn=document.getElementById('gyroBtn'), laserBtn=document.getElementById('laserBtn');
     const netBox=document.getElementById('net'), tbody=document.querySelector('#lagTable tbody');
     document.getElementById('clearLag').onclick=()=>{tbody.innerHTML='';};
-    function nowClock(){const d=new Date();const p=n=>String(n).padStart(2,'0');return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;}
-    function addLagRow(metric,val,note,sev='warn'){const tr=document.createElement('tr');tr.innerHTML=`<td>${nowClock()}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`;tbody.prepend(tr);while(tbody.children.length>80)tbody.removeChild(tbody.lastChild);}
+    const addLagRow=(metric,val,note,sev='warn')=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${new Date().toLocaleTimeString()}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`;tbody.prepend(tr);while(tbody.children.length>80)tbody.removeChild(tbody.lastChild);};
 
     let myColor=null,drawing=false,isStartPending=false;
     let lastAlpha=0,lastBeta=0,lastGamma=0,zeroA=0,zeroB=0,zeroG=0;
     const fA=new OneEuroFilter(1.2,0.03,1.0), fB=new OneEuroFilter(1.2,0.03,1.0), fG=new OneEuroFilter(1.8,0.03,1.0);
     let maxHor=20,maxVer=20;
 
-    // --- Rate Control ---
+    // Adaptive Sendefrequenz
     let targetSendFps=30; const MIN_FPS=12, MAX_FPS=30;
     let sendIntervalMs=1000/targetSendFps;
+
+    // Delta-Gating
+    let lastSentX=NaN, lastSentY=NaN, lastSentG=NaN, lastSentT=0;
+    const EPS_POS=0.008, EPS_ANG=1.5, KEEPALIVE_MS=140;
 
     // Binary payload: [float x, float y, float angleDeg, uint32 seq, uint32 flags]
     let seq=0; const sendTimes=new Map(); let rttMs=NaN;
     let sendsThisSec=0, sendFps=0; setInterval(()=>{sendFps=sendsThisSec; sendsThisSec=0;},1000);
-    const RTT_WARN=80, RTT_BAD=140;
+
+    // >>> weniger empfindliche RTT-Warnschwellen
+    const RTT_WARN=200;  // vorher 80
+    const RTT_BAD =350;  // vorher 140
 
     socket.on('connect',()=>{socket.emit('identify',{role:'control',deviceId:socket.id});socket.emit('request-settings');});
     socket.on('assign-color',c=>{myColor=c;laserBtn.style.borderColor=c;gyroBtn.style.borderColor=c;});
     socket.on('settings',s=>{if(typeof s.maxHor==='number')maxHor=s.maxHor; if(typeof s.maxVer==='number')maxVer=s.maxVer;});
 
-    // Display schlägt FPS vor
     socket.on('rate-suggest',({targetFps})=>{
       if(typeof targetFps==='number'){
         targetSendFps=Math.max(MIN_FPS,Math.min(MAX_FPS,targetFps));
@@ -88,7 +92,7 @@
       const t0=sendTimes.get(ackSeq);
       if(t0!==undefined){
         const rtt=performance.now()-t0;
-        rttMs=isNaN(rttMs)?rtt:(0.85*rttMs+0.15*rtt);
+        rttMs=isNaN(rttMs)?rtt:(0.9*rttMs+0.1*rtt); // stärker geglättet
         sendTimes.delete(ackSeq);
         if(rtt>RTT_BAD) addLagRow('RTT',`${Math.round(rtt)} ms`,'starker Spike','bad');
         else if(rtt>RTT_WARN) addLagRow('RTT',`${Math.round(rtt)} ms`,'hoch','warn');
@@ -113,8 +117,9 @@
       e.preventDefault(); drawing=true; isStartPending=true;
       fA.reset(lastAlpha); fB.reset(lastBeta); fG.reset(lastGamma);
       zeroA=fA.xHat; zeroB=fB.xHat; zeroG=fG.xHat;
+      lastSentX=NaN; lastSentY=NaN; lastSentG=NaN; lastSentT=0;
     },{passive:false});
-    laserBtn.addEventListener('touchend',e=>{e.preventDefault(); drawing=false; socket.emit('draw-end',{deviceId:socket.id});},{passive:false});
+    laserBtn.addEventListener('touchend',e=>{e.preventDefault(); drawing=false; socket.emit('draw-end');},{passive:false});
 
     let lastSendT=performance.now();
     function loop(){
@@ -132,19 +137,23 @@
         const x=1-((dA+maxHor)/(2*maxHor));
         const y=1-((dB+maxVer)/(2*maxVer));
 
-        if(isFinite(x)&&isFinite(y)){
+        // Delta-Gating
+        const bigMove = !isFinite(lastSentX) ||
+                        Math.abs(x - lastSentX) > EPS_POS ||
+                        Math.abs(y - lastSentY) > EPS_POS ||
+                        Math.abs(dG - lastSentG) > EPS_ANG ||
+                        (now - lastSentT) > KEEPALIVE_MS;
+
+        if(isFinite(x)&&isFinite(y)&&bigMove){
           const idSeq=++seq; sendTimes.set(idSeq,now); sendsThisSec++;
           const flags=isStartPending?1:0; isStartPending=false;
 
-          const buf=new ArrayBuffer(20); // 5 * 4 bytes
-          const dv=new DataView(buf);
-          dv.setFloat32(0, x, true);
-          dv.setFloat32(4, y, true);
-          dv.setFloat32(8, dG, true);
-          dv.setUint32(12, idSeq, true);
-          dv.setUint32(16, flags, true);
+          const buf=new ArrayBuffer(20); const dv=new DataView(buf);
+          dv.setFloat32(0,x,true); dv.setFloat32(4,y,true); dv.setFloat32(8,dG,true); dv.setUint32(12,idSeq,true); dv.setUint32(16,flags,true);
 
           socket.compress(false).volatile.emit('draw', buf);
+
+          lastSentX=x; lastSentY=y; lastSentG=dG; lastSentT=now;
         }
       }
       netBox.textContent=`RTT: ${isNaN(rttMs)?'–':Math.round(rttMs)} ms | send FPS: ${sendFps||'–'} (target ${targetSendFps})`;
