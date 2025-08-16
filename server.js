@@ -1,10 +1,17 @@
-// v2.1.1 – /public static, Paddle-Line. + ACK-Forwarding für Lag-Diagnose
+// v2.1.3 – WS-only + volatile forward für Draw-Events
 const path = require('path');
 const express = require('express');
 const app = express();
 const server = require('http').createServer(app);
 const { Server } = require('socket.io');
-const io = new Server(server, { cors: { origin: '*' } });
+
+// WICHTIG: Nur WebSocket, keine Polling-Upgrades, keine Message-Kompression
+const io = new Server(server, {
+  cors: { origin: '*' },
+  transports: ['websocket'],
+  perMessageDeflate: false,
+  httpCompression: false
+});
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC = path.join(__dirname, 'public');
@@ -22,7 +29,7 @@ let settings = {
   maxHor: 20,
   maxVer: 20,
   smoothing: 0.5,
-  paddleLength: 240, // Server-Default egal; Display nutzt lokalen Fix.
+  paddleLength: 240, // Display nutzt lokal 80px
   paddleWidth: 14
 };
 
@@ -65,16 +72,20 @@ io.on('connection', (socket) => {
     io.emit('settings', settings);
   });
 
+  // >>> Volatile Forward: werden Frames gestaut, werden sie lieber DROPPED statt verzögert
   socket.on('draw', (payload) => {
-    // an alle Displays
-    for (const [_, c] of clients.entries()) if (c.type === 'display') c.socket.emit('draw', payload);
+    for (const [_, c] of clients.entries()) {
+      if (c.type === 'display') {
+        c.socket.compress(false).volatile.emit('draw', payload);
+      }
+    }
   });
 
   socket.on('draw-end', ({ deviceId }) => {
     for (const [_, c] of clients.entries()) if (c.type === 'display') c.socket.emit('draw-end', { deviceId });
   });
 
-  // NEW: ACK vom Display → zurück an das zugehörige Control
+  // ACK vom Display → zurück zum jeweiligen Control (für RTT)
   socket.on('draw-ack', ({ deviceId, seq }) => {
     const target = clients.get(deviceId);
     if (target && target.socket) target.socket.emit('draw-ack', { seq });
