@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Control</title>
   <style>
     html, body {
@@ -26,69 +26,69 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.1 Control</div>
+  <div id="version">v1.7 Control</div>
   <button id="gyroBtn">Gyro freigeben</button>
   <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket = io();
-    const gyroBtn = document.getElementById('gyroBtn');
-    const laserBtn = document.getElementById('laserBtn');
-    let drawing = false;
-    let myColor = null;
-
+    const socket    = io();
+    const gyroBtn   = document.getElementById('gyroBtn');
+    const laserBtn  = document.getElementById('laserBtn');
+    let myColor     = null;
+    let drawing     = false;
     let zeroA = 0, zeroB = 0, lastAlpha = 0, lastBeta = 0;
 
     socket.on('connect', () => {
-      socket.emit('identify', { role: 'control', deviceId: socket.id });
+      socket.emit('identify',      { role:'control', deviceId: socket.id });
+      socket.emit('request-settings');
     });
 
+    // Farbe vom Server bekommen, aber Button erst nach Permission zeigen
     socket.on('assign-color', color => {
       myColor = color;
-      laserBtn.style.borderColor = color;
+      laserBtn.style.borderColor = myColor;
     });
 
+    // Gyro-Button: nach Permission Laser-Button anzeigen
     gyroBtn.addEventListener('click', async () => {
       if (DeviceOrientationEvent?.requestPermission) {
         const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
         if (perm !== 'granted') {
-          return alert('Gyroskop-Zugriff benötigt!');
+          return alert('Gyroskop‑Zugriff benötigt!');
         }
       }
-      gyroBtn.style.display = 'none';
-      laserBtn.style.display = 'block';
+      // Wenn Farbe schon da ist, direkt wechseln
+      if (myColor) {
+        gyroBtn.style.display  = 'none';
+        laserBtn.style.display = 'block';
+      }
     });
 
+    // Laser starten
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
-      zeroA = lastAlpha;
-      zeroB = lastBeta;
-    }, { passive: false });
+      zeroA = lastAlpha; zeroB = lastBeta;
+    }, { passive:false });
 
+    // Laser stoppen
     laserBtn.addEventListener('touchend', e => {
       e.preventDefault();
       drawing = false;
       socket.emit('draw-end', { deviceId: socket.id });
-    }, { passive: false });
+    }, { passive:false });
 
     window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha;
-      lastBeta = ev.beta;
+      lastAlpha = ev.alpha; lastBeta = ev.beta;
       if (!drawing) return;
-
-      let dA = lastAlpha - zeroA;
+      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
       let dB = lastBeta  - zeroB;
-      if (dA > 180) dA -= 360;
-      if (dA < -180) dA += 360;
-
       const maxHor = 20, maxVer = 20;
       dA = Math.max(-maxHor, Math.min(maxHor, dA));
       dB = Math.max(-maxVer, Math.min(maxVer, dB));
       const x = 1 - ((dA + maxHor) / (2 * maxHor));
       const y = 1 - ((dB + maxVer) / (2 * maxVer));
-
       socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
     });
   </script>
