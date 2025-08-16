@@ -1,6 +1,6 @@
 {
-  "name": "laser‐game",
-  "version": "1.0.0",
+  "name": "laser-game",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "start": "node server.js"
@@ -10,4 +10,3 @@
     "socket.io": "^4.7.2"
   }
 }
-
