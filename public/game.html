@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.0)</title>
+  <title>Game Display – Paddle-Line (v2.0.1)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:1; }
@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.0 Game</div>
+  <div id="version">v2.0.1 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -25,16 +25,18 @@
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
 
-    // Assets (optional, belassen wie gehabt)
+    // Assets (liegen in /public)
     let maskCanvas, maskCtx;
     const bgImage    = new Image(),
           maskImage  = new Image(),
           ballBase   = new Image(),
           ballShadow = new Image();
-    bgImage.src    = '/background.png';
-    maskImage.src  = '/mask.png';
-    ballBase.src   = '/ball-base.png';
-    ballShadow.src = '/ball-shadow.png';
+
+    // relative Pfade, da /public der Static-Root ist
+    bgImage.src    = 'background.png';
+    maskImage.src  = 'mask.png';
+    ballBase.src   = 'ball-base.png';
+    ballShadow.src = 'ball-shadow.png';
 
     let loaded=0;
     [bgImage, maskImage].forEach(img=>{
@@ -53,21 +55,20 @@
       };
     });
 
-    // Settings (können live vom Admin kommen)
-    let smoothing      = 0.5;  // 0..1  (höher = mehr Dämpfung)
-    let paddleLength   = 240;  // px
-    let paddleWidth    = 14;   // px
+    // Settings
+    let smoothing      = 0.5;
+    let paddleLength   = 240;
+    let paddleWidth    = 14;
 
     const FRICTION         = 0.995,
           ANGULAR_FRICTION = 0.95,
           BOUNCE           = 0.8,
           BASE_STRENGTH    = 0.15,
-          SPEED_SCALE      = 0.0002, // Einfluss der Controllerbewegung
+          SPEED_SCALE      = 0.0002,
           PTR_TTL          = 500;
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    // pro deviceId: { sx, sy, px, py, a, pa, t, pt, color }
     const paddles = {};
     const deviceColors = {};
     const FALLBACK_COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
@@ -83,7 +84,7 @@
       if (!canvas.width) return;
       const now  = performance.now();
       const rawX = x * canvas.width, rawY = y * canvas.height;
-      const rawA = (angleDeg ?? 0) * Math.PI/180; // → rad
+      const rawA = (angleDeg ?? 0) * Math.PI/180;
 
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
@@ -94,7 +95,6 @@
       } else {
         const sx = prev.sx + (rawX - prev.sx)*(1 - smoothing);
         const sy = prev.sy + (rawY - prev.sy)*(1 - smoothing);
-        // Winkel-Glättung (kleine Schritte, Gamma ist [-90..90], Wrap kaum Thema)
         const a  = prev.a  + (rawA - prev.a )*(1 - smoothing);
         paddles[deviceId] = { sx, sy, px:prev.sx, py:prev.sy, a, pa:prev.a, t:now, pt:prev.pt, color:deviceColors[deviceId] };
       }
@@ -102,7 +102,6 @@
 
     socket.on('draw-end', ({deviceId})=> delete paddles[deviceId]);
 
-    // Alte Paddles entsorgen
     function cleanup(now){
       for(const id in paddles){
         if(now - paddles[id].t > PTR_TTL) delete paddles[id];
@@ -110,7 +109,6 @@
     }
 
     function reflectVelocityOnNormal(vx, vy, nx, ny) {
-      // v' = v - 2 (v·n) n
       const dot = vx*nx + vy*ny;
       return [vx - 2*dot*nx, vy - 2*dot*ny];
     }
@@ -119,58 +117,45 @@
       if(!maskCtx) return;
       cleanup(performance.now());
 
-      // Kollision mit allen Paddles (als Liniensegmente)
+      // Paddle-Kollisionen
       for(const id in paddles){
         const p = paddles[id];
-        // Segment: Mittelpunkt P(sx,sy), Richtung u = (cos a, sin a), Länge L
         const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
         const L2 = paddleLength * 0.5;
 
-        // Nächster Punkt Q auf Segment zu Kugelzentrum C
         const vx = ball.x - p.sx;
         const vy = ball.y - p.sy;
-        let t = vx*u.x + vy*u.y;           // Projektion auf u (Skalar)
-        t = Math.max(-L2, Math.min(L2, t)); // clamp auf Segmentgrenzen
+        let t = vx*u.x + vy*u.y;
+        t = Math.max(-L2, Math.min(L2, t));
         const qx = p.sx + u.x * t;
         const qy = p.sy + u.y * t;
 
-        // Abstand Kugelzentrum zu Q
         let nx = ball.x - qx;
         let ny = ball.y - qy;
         const dist = Math.hypot(nx, ny);
         const hitDist = ball.r + paddleWidth*0.5;
 
         if (dist <= hitDist) {
-          // Kollisionsnormal n (vom Paddle zum Ball)
           const d = dist || 1;
           nx /= d; ny /= d;
 
-          // Bewegungsstärke des Controllers
           const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
           const deltaT = Math.max(p.t - p.pt, 1);
           const ctrlSpeed = segLen * 1000 / deltaT;
           const strength = BASE_STRENGTH + ctrlSpeed * SPEED_SCALE;
 
-          // Impuls aufs Ballzentrum entlang Normalenrichtung
           ball.vx += nx * strength;
           ball.vy += ny * strength;
-
-          // Zusätzliche Reflexion (elastischer Anteil)
           [ball.vx, ball.vy] = reflectVelocityOnNormal(ball.vx, ball.vy, nx, ny);
 
-          // Rausdrücken, damit er nicht „klebt“
           const pen = hitDist - dist + 0.5;
           ball.x += nx * pen;
           ball.y += ny * pen;
 
-          // Grobe Rotation: tangentiale Komponente erzeugt Drehimpuls
-          // Tangente = senkrecht zur Normalen
           const tx = -ny, ty = nx;
           const tangential = ball.vx*tx + ball.vy*ty;
           ball.angularVelocity += tangential * 0.001;
 
-          // Vergiss nicht: Controller-"Vergangenheitszeit" updaten,
-          // damit mehrere Hits pro Frame verhindert werden
           p.pt = p.t;
         }
       }
@@ -180,7 +165,7 @@
       ball.y += ball.vy*dt;
       ball.angle += ball.angularVelocity*dt;
 
-      // Masken-Kollision: Ball muss auf heller Fläche bleiben
+      // Masken-Kollision nach außen drücken
       let correctionX = 0, correctionY = 0, hitCount = 0;
       for(let i=0;i<16;i++){
         const ang = i*(Math.PI*2/16);
@@ -188,7 +173,6 @@
         const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
           const d = maskCtx.getImageData(ex,ey,1,1).data;
-          // Weiß = Spielfläche → Kollision, wenn NICHT weiß
           if(d[0]<200 || d[1]<200 || d[2]<200){
             const nx = Math.cos(ang);
             const ny = Math.sin(ang);
@@ -228,7 +212,7 @@
         ctx.clearRect(0,0,canvas.width,canvas.height);
       }
 
-      // Schlagschatten unter dem Ball
+      // Schatten
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
       ctx.shadowBlur = 15;
@@ -252,7 +236,7 @@
         ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
       }
 
-      // Paddles zeichnen
+      // Paddles
       for(const id in paddles){
         const p = paddles[id];
         ctx.save();
@@ -260,9 +244,7 @@
         ctx.rotate(p.a);
         ctx.fillStyle = p.color || '#fff';
         ctx.beginPath();
-        // Abgerundete Kapsel: Rechteck + Kreise
         const L = paddleLength, W = paddleWidth, r = W/2;
-        // Mittelachse ist in x-Richtung, Segment von -L/2 bis +L/2
         ctx.moveTo(-L/2, -r);
         ctx.lineTo( L/2, -r);
         ctx.arc( L/2, 0, r, -Math.PI/2,  Math.PI/2);
