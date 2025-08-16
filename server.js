@@ -1,4 +1,4 @@
-// v2.0.1 – Static aus /public, Paddle-Line + Rotation (alpha/beta/gamma)
+// v2.0.2 – Static aus /public, Paddle-Line + Rotation (alpha/beta/gamma)
 const path = require('path');
 const express = require('express');
 const app = express();
@@ -23,10 +23,10 @@ let colorIndex = 0;
 
 const clients = new Map(); // socketId -> { socket, type, deviceId, ip, color }
 let settings = {
-  maxHor: 20,       // Grad (links/rechts)
-  maxVer: 20,       // Grad (vor/zurück)
-  smoothing: 0.5,   // 0..1
-  paddleLength: 240, // px
+  maxHor: 20,        // Grad (links/rechts)
+  maxVer: 20,        // Grad (vor/zurück)
+  smoothing: 0.5,    // 0..1
+  paddleLength: 80,  // px  (war 240 → jetzt 1/3)
   paddleWidth: 14    // px
 };
 
