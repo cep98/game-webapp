@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.0.3)</title>
+  <title>Game Display – Paddle-Line (v2.1)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:1; }
@@ -11,11 +11,41 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.0.3 Game</div>
+  <div id="version">v2.1 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // -------- 1€-Filter (Display-Seite) --------
+    class OneEuroFilter {
+      constructor(minCutoff = 1.0, beta = 0.015, dCutoff = 1.0) {
+        this.minCutoff = minCutoff;
+        this.beta = beta;
+        this.dCutoff = dCutoff;
+        this.xHat = null;
+        this.dxHat = 0;
+      }
+      alpha(fc, dt) {
+        const tau = 1 / (2 * Math.PI * fc);
+        return 1 / (1 + tau / dt);
+      }
+      filter(x, dt) {
+        if (dt <= 0 || !isFinite(dt)) dt = 1/60;
+        if (this.xHat === null) {
+          this.xHat = x; this.dxHat = 0; return x;
+        }
+        const dx = (x - this.xHat) / dt;
+        const aD = this.alpha(this.dCutoff, dt);
+        this.dxHat = aD * dx + (1 - aD) * this.dxHat;
+
+        const cutoff = this.minCutoff + this.beta * Math.abs(this.dxHat);
+        const aX = this.alpha(cutoff, dt);
+        this.xHat = aX * x + (1 - aX) * this.xHat;
+        return this.xHat;
+      }
+      reset(x) { this.xHat = x; this.dxHat = 0; }
+    }
+
     const socket = io();
     socket.on('connect', () => {
       socket.emit('identify',{ role:'display', deviceId: socket.id });
@@ -54,29 +84,31 @@
       };
     });
 
-    // Settings (Länge hier fix, auch wenn Server was sendet)
-    let smoothing      = 0.5;
+    // Settings (Länge hier fix)
+    let smoothing      = 0.0;  // deaktiviert, Filter übernimmt
     let paddleLength   = 80;   // fest in game
     let paddleWidth    = 14;
 
     const FRICTION           = 0.995,
           ANGULAR_FRICTION   = 0.95,
           BOUNCE             = 0.8,    // Wände
-          RESTITUTION_PAD    = 1.45,   // Schläger-Bounce (höher = „knackiger“)
-          CTRL_NORM_SCALE    = 0.0012, // Zusatz-Impuls bei aktivem Schlag (px/s → vx)
-          PTR_TTL            = 500;
+          RESTITUTION_PAD    = 1.45,   // Schläger-Bounce
+          CTRL_NORM_SCALE    = 0.0012,
+          PTR_TTL            = 600;
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
+    // pro deviceId:
+    // { rawX, rawY, rawA, x, y, a, px, py, t, color, fx, fy, fa }
     const paddles = {};
     const deviceColors = {};
     const FALLBACK_COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIdx = 0;
 
     socket.on('settings', s => {
-      if (typeof s.smoothing === 'number') smoothing = s.smoothing;
-      // paddleLength wird hier absichtlich NICHT aus Settings übernommen
+      if (typeof s.smoothing === 'number') smoothing = s.smoothing; // nicht genutzt, nur falls du testen willst
       if (typeof s.paddleWidth  === 'number') paddleWidth  = s.paddleWidth;
+      // paddleLength bleibt lokal fix
     });
 
     socket.on('draw', ({x,y,angleDeg,deviceId,color,isStart})=>{
@@ -88,14 +120,28 @@
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
 
-      const prev = paddles[deviceId];
-      if (!prev || isStart) {
-        paddles[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, a:rawA, pa:rawA, t:now, pt:now, color:deviceColors[deviceId] };
+      let p = paddles[deviceId];
+      if (!p) {
+        p = paddles[deviceId] = {
+          rawX, rawY, rawA,
+          x: rawX, y: rawY, a: rawA,
+          px: rawX, py: rawY,
+          t: now, pt: now,
+          color: deviceColors[deviceId],
+          fx: new OneEuroFilter(1.2, 0.015, 1.0),
+          fy: new OneEuroFilter(1.2, 0.015, 1.0),
+          fa: new OneEuroFilter(1.8, 0.015, 1.0)
+        };
+        p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
       } else {
-        const sx = prev.sx + (rawX - prev.sx)*(1 - smoothing);
-        const sy = prev.sy + (rawY - prev.sy)*(1 - smoothing);
-        const a  = prev.a  + (rawA - prev.a )*(1 - smoothing);
-        paddles[deviceId] = { sx, sy, px:prev.sx, py:prev.sy, a, pa:prev.a, t:now, pt:prev.pt, color:deviceColors[deviceId] };
+        // nur Ziele aktualisieren; Filterung passiert im Update-Loop mit konstantem dt
+        p.rawX = rawX; p.rawY = rawY; p.rawA = rawA;
+        p.t = now;
+        if (isStart) { // harter Reset bei neuem „Laser drücken“
+          p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
+          p.x = rawX; p.y = rawY; p.a = rawA;
+          p.px = rawX; p.py = rawY;
+        }
       }
     });
 
@@ -109,7 +155,17 @@
 
     function update(dt){
       if(!maskCtx) return;
-      cleanup(performance.now());
+      const now = performance.now();
+      cleanup(now);
+
+      // Filtere Paddle-Positionen im Frame-Takt (entkoppelt von Netzwerkwacklern)
+      for(const id in paddles){
+        const p = paddles[id];
+        p.px = p.x; p.py = p.y; // für Geschwindigkeits-/Impulsberechnung
+        p.x = p.fx.filter(p.rawX, dt);
+        p.y = p.fy.filter(p.rawY, dt);
+        p.a = p.fa.filter(p.rawA, dt);
+      }
 
       // Paddle-Kollisionen
       for(const id in paddles){
@@ -117,12 +173,12 @@
         const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
         const L2 = paddleLength * 0.5;
 
-        const vx = ball.x - p.sx;
-        const vy = ball.y - p.sy;
-        let t = vx*u.x + vy*u.y;
-        t = Math.max(-L2, Math.min(L2, t));
-        const qx = p.sx + u.x * t;
-        const qy = p.sy + u.y * t;
+        const vx = ball.x - p.x;
+        const vy = ball.y - p.y;
+        let tProj = vx*u.x + vy*u.y;
+        tProj = Math.max(-L2, Math.min(L2, tProj));
+        const qx = p.x + u.x * tProj;
+        const qy = p.y + u.y * tProj;
 
         let nx = ball.x - qx;
         let ny = ball.y - qy;
@@ -133,34 +189,31 @@
           const d = dist || 1;
           nx /= d; ny /= d;
 
-          // Nur reflektieren, wenn der Ball auf die Normale zufliegt
+          // Nur reflektieren, wenn Annäherung
           const vDotN = ball.vx*nx + ball.vy*ny;
           if (vDotN < 0) {
             ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx;
             ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny;
           }
 
-          // Zusatz-Impuls: nur wenn Controller ins Ball-Normale drückt
-          const dvx = p.sx - p.px;
-          const dvy = p.sy - p.py;
-          const dtMs = Math.max(p.t - p.pt, 1);
-          const ctrlN = (dvx*nx + dvy*ny) * 1000 / dtMs; // + = in den Ball hinein
+          // Zusatzimpuls abhängig von Paddle-Bewegung entlang der Normalen
+          const dvx = (p.x - p.px) / dt;
+          const dvy = (p.y - p.py) / dt;
+          const ctrlN = (dvx*nx + dvy*ny);
           if (ctrlN > 0) {
             ball.vx += nx * ctrlN * CTRL_NORM_SCALE;
             ball.vy += ny * ctrlN * CTRL_NORM_SCALE;
           }
 
-          // Rausdrücken, damit kein Schieben/Kleben
+          // Penetration lösen
           const pen = hitDist - dist + 1.0;
           ball.x += nx * pen;
           ball.y += ny * pen;
 
-          // Drehimpuls durch tangentiale Komponente
+          // Drehimpuls (tangentiale Komponente)
           const tx = -ny, ty = nx;
           const tangential = ball.vx*tx + ball.vy*ty;
           ball.angularVelocity += tangential * 0.001;
-
-          p.pt = p.t;
         }
       }
 
@@ -244,7 +297,7 @@
       for(const id in paddles){
         const p = paddles[id];
         ctx.save();
-        ctx.translate(p.sx, p.sy);
+        ctx.translate(p.x, p.y);
         ctx.rotate(p.a);
         ctx.fillStyle = p.color || '#fff';
         ctx.beginPath();
@@ -262,7 +315,7 @@
 
     let last=performance.now();
     (function loop(now){
-      const dt=(now-last)/16.67; last=now;
+      const dt=(now-last)/1000; last=now; // Sekunden
       update(dt);
       draw();
       requestAnimationFrame(loop);
