@@ -3,34 +3,33 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display mit Hindernissen (v2.1)</title>
+  <title>Game Display</title>
   <style>
     html, body {
       margin:0; padding:0; width:100%; height:100%;
       background:#000; overflow:hidden;
     }
-    #version {
-      position:absolute; top:10px; left:10px;
-      color:#fff; opacity:0.6; font-size:0.9em;
-    }
     canvas {
       display:block; margin:0 auto; background:#000;
+    }
+    #version {
+      position:absolute; top:10px; left:10px;
+      color:#fff; font-size:0.9em; opacity:0.5;
     }
   </style>
 </head>
 <body>
-  <div id="version">v2.1 Game</div>
+  <div id="version">v2.2 Game</div>
   <canvas id="gameCanvas"></canvas>
-
   <script src="/socket.io/socket.io.js"></script>
   <script>
     const socket = io();
     socket.on('connect', () => {
-      socket.emit('identify',{ role:'display', deviceId: socket.id });
+      socket.emit('identify', { role:'display', deviceId: socket.id });
     });
 
     const canvas = document.getElementById('gameCanvas'),
-          ctx    = canvas.getContext('2d');
+          ctx = canvas.getContext('2d');
     let maskCanvas, maskCtx;
 
     const bgImage    = new Image(),
@@ -43,19 +42,21 @@
     ballBase.src   = '/ball-base.png';
     ballShadow.src = '/ball-shadow.png';
 
-    let loaded=0;
-    [bgImage, maskImage].forEach(img => {
+    let loaded = 0;
+    const images = [bgImage, maskImage, ballBase, ballShadow];
+    images.forEach(img => {
       img.onload = () => {
-        if (++loaded === 2) {
-          canvas.width  = maskImage.width;
+        if (++loaded === images.length) {
+          canvas.width = maskImage.width;
           canvas.height = maskImage.height;
-          maskCanvas    = document.createElement('canvas');
-          maskCanvas.width  = maskImage.width;
+          maskCanvas = document.createElement('canvas');
+          maskCanvas.width = maskImage.width;
           maskCanvas.height = maskImage.height;
           maskCtx = maskCanvas.getContext('2d');
-          maskCtx.drawImage(maskImage,0,0);
-          ball.x = canvas.width/2;
-          ball.y = canvas.height/2;
+          maskCtx.drawImage(maskImage, 0, 0);
+          ball.x = canvas.width / 2;
+          ball.y = canvas.height / 2;
+          startLoop();
         }
       };
     });
@@ -63,7 +64,6 @@
     const FRICTION = 0.985;
     const BOUNCE   = 0.8;
     const PTR_R    = 16;
-
     let ball = { x:0, y:0, vx:0, vy:0, r:20 };
 
     const pointers = {};
@@ -72,7 +72,7 @@
     let colorIndex = 0;
 
     const particles = [];
-    function spawnParticles(x, y, color, count = 4) {
+    function spawnParticles(x, y, color, count = 3) {
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * 2 * Math.PI;
         const speed = 1 + Math.random() * 1.5;
@@ -87,13 +87,14 @@
         });
       }
     }
+
     function updateParticles(dt) {
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.x += p.vx;
         p.y += p.vy;
         p.t += dt;
-        p.alpha -= 0.025 * dt;
+        p.alpha -= 0.03 * dt;
         if (p.alpha <= 0) particles.splice(i, 1);
       }
     }
@@ -154,8 +155,8 @@
         if (vDotN < 0) {
           ball.vx -= 2 * vDotN * correctionX;
           ball.vy -= 2 * vDotN * correctionY;
-          ball.x += correctionX * 1.5;
-          ball.y += correctionY * 1.5;
+          ball.x += correctionX * 2;
+          ball.y += correctionY * 2;
         }
       }
 
@@ -201,14 +202,16 @@
       ctx.globalAlpha = 1.0;
     }
 
-    let last = performance.now();
-    requestAnimationFrame(function loop(now) {
-      const dt = (now - last) / 16.67;
-      last = now;
-      update(dt);
-      draw();
-      requestAnimationFrame(loop);
-    });
+    function startLoop() {
+      let last = performance.now();
+      requestAnimationFrame(function loop(now) {
+        const dt = (now - last) / 16.67;
+        last = now;
+        update(dt);
+        draw();
+        requestAnimationFrame(loop);
+      });
+    }
   </script>
 </body>
 </html>
