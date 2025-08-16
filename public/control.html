@@ -1,155 +1,105 @@
 <!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
-  <title>Control – Paddle</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Control</title>
   <style>
-    :root { --accent: #4f46e5; }
-    * { box-sizing: border-box; }
-    html, body { height: 100%; margin: 0; }
-    body {
-      background: #0b0b0f;
-      display: grid; place-items: center;
-      color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-      -webkit-user-select: none; user-select: none;
-      -webkit-touch-callout: none;
+    html, body {
+      margin: 0; padding: 0; height: 100%;
+      background: #222; color: #fff;
+      font-family: sans-serif;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
     }
-    .wrap { width: min(560px, 92vw); display: grid; gap: 20px; justify-items: center; }
-    .row { width: 100%; display: flex; align-items: center; justify-content: space-between; }
-    .badge { opacity: .7; font-size: 12px; }
-    /* Laser/Paddle Button – ohne sichtbaren Text */
-    .laser {
-      width: min(70vw, 360px); height: min(70vw, 360px);
-      border-radius: 999px;
-      background: radial-gradient(60% 60% at 35% 30%, rgba(255,255,255,.15), rgba(255,255,255,.03) 40%, rgba(0,0,0,.3) 60%),
-                  conic-gradient(from 180deg at 50% 50%, rgba(255,255,255,.08), rgba(255,255,255,0));
-      border: 8px solid var(--accent);
-      box-shadow: 0 10px 30px rgba(79,70,229,.35), inset 0 8px 20px rgba(255,255,255,.08);
-      touch-action: none; display: grid; place-items: center; position: relative;
+    #version {
+      position: absolute; top: 10px; right: 10px; opacity: 0.7;
     }
-    .laser:active { filter: brightness(1.08); }
-    .laser::after { content: ""; width: 18%; height: 18%; border-radius: 999px; background: rgba(255,255,255,.12); box-shadow: 0 0 30px rgba(255,255,255,.2) inset; }
-    .btn { width: 48px; height: 48px; border-radius: 14px; background: #11131a; border: 1px solid #1f2330; display: grid; place-items: center; }
-    .btn svg { width: 22px; height: 22px; opacity: .8; }
-    .hint { opacity: .7; font-size: 13px; text-align: center; }
+    #gyroBtn, #laserBtn {
+      font-size: 1.2em; padding: 0.5em 1em; margin: 0.5em;
+      color: #fff; background: #444;
+      border: 4px solid transparent; border-radius: 4px;
+      transition: border-color 0.3s;
+    }
+    #laserBtn {
+      width: 100px; height: 100px; border-radius: 50%;
+      background: red; display: none;
+    }
   </style>
 </head>
 <body>
-  <div class="wrap">
-    <div class="row">
-      <div class="badge" id="status">verbunden…</div>
-      <div class="btn" id="permBtn" title="Sensor erlauben" aria-label="Sensor erlauben">
-        <!-- bolt icon -->
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13 2L3 14h7v8l11-14h-8l0-6z"/></svg>
-      </div>
-    </div>
-
-    <button class="laser" id="laserBtn" aria-label="Laser"></button>
-
-    <div class="hint">Tippe & halte. <b>Jeder Druck kalibriert</b> auf die aktuelle Haltung. Paddle-Winkel = 3. Achse (Gamma).</div>
-  </div>
+  <div id="version">v2.1 Control</div>
+  <button id="gyroBtn">Gyro freigeben</button>
+  <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket   = io();
+    const socket = io();
+    const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
-    const permBtn  = document.getElementById('permBtn');
-    const statusEl = document.getElementById('status');
 
-    let myColor = '#ffffff';
+    let myColor = null;
     let drawing = false;
+    let zeroA = 0, zeroB = 0;
+    let lastAlpha = 0, lastBeta = 0;
 
-    // aktuelle Sensorwerte
-    let lastAlpha = 0, lastBeta = 0, lastGamma = 0;
-    // Nullstellung (wird JEDES MAL beim Drücken gesetzt)
-    let zeroA = 0, zeroB = 0, zeroG = 0;
-
-    // Grenzen für Mapping (Grad)
-    const MAX_HOR = 20;   // Alpha → X
-    const MAX_VER = 20;   // Beta  → Y
-    const MAX_ROT = 60;   // Gamma → Rotation
-
-    // --- Socket ---
     socket.on('connect', () => {
-      statusEl.textContent = 'verbunden';
-      socket.emit('identify', { role:'control', deviceId: socket.id });
-      socket.emit('request-settings');
+      socket.emit('identify', { role: 'control', deviceId: socket.id });
     });
-    socket.on('disconnect', () => { statusEl.textContent = 'getrennt'; });
-    socket.on('assign-color', (color) => {
-      if (!color) return;
+
+    socket.on('assign-color', color => {
       myColor = color;
-      document.documentElement.style.setProperty('--accent', color);
       laserBtn.style.borderColor = color;
     });
 
-    // --- iOS Orientation Permission ---
-    async function ensureOrientationPermission(){
-      try {
-        const DOE = window.DeviceOrientationEvent;
-        if (DOE && typeof DOE.requestPermission === 'function') {
-          const res = await DOE.requestPermission();
-          return res === 'granted';
+    gyroBtn.addEventListener('click', async () => {
+      if (DeviceOrientationEvent?.requestPermission) {
+        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
+        if (perm !== 'granted') {
+          return alert('Gyro-Zugriff erforderlich!');
         }
-        return true; // Android/Desktop
-      } catch { return false; }
-    }
-    permBtn.addEventListener('click', async () => {
-      const ok = await ensureOrientationPermission();
-      statusEl.textContent = ok ? 'Sensor: OK' : 'Sensor: verweigert';
+      }
+
+      gyroBtn.style.display = 'none';
+      laserBtn.style.display = 'block';
     });
 
-    // --- Button handling (jede Betätigung kalibriert Mitte) ---
-    function calibrateToCurrent(){
-      zeroA = lastAlpha; zeroB = lastBeta; zeroG = lastGamma;
-    }
-    function pressStart(){
-      if (drawing) return;
+    laserBtn.addEventListener('touchstart', e => {
+      e.preventDefault();
       drawing = true;
-      ensureOrientationPermission(); // versucht iOS-Prompt
-      calibrateToCurrent();          // <<< jedes Mal kalibrieren
-      // optionales Startsignal
-      socket.emit('draw', { isStart:true, x:0.5, y:0.5, rot:0, deviceId: socket.id, color: myColor });
-    }
-    function pressEnd(){
-      if (!drawing) return;
+      zeroA = lastAlpha;
+      zeroB = lastBeta;
+    }, { passive: false });
+
+    laserBtn.addEventListener('touchend', e => {
+      e.preventDefault();
       drawing = false;
       socket.emit('draw-end', { deviceId: socket.id });
-    }
+    }, { passive: false });
 
-    // Touch + Maus
-    laserBtn.addEventListener('touchstart', e => { e.preventDefault(); pressStart(); }, { passive:false });
-    laserBtn.addEventListener('touchend',   e => { e.preventDefault(); pressEnd();   }, { passive:false });
-    laserBtn.addEventListener('mousedown',  e => { e.preventDefault(); pressStart(); });
-    window.addEventListener('mouseup',      () => { pressEnd(); });
-
-    // --- Orientation → x, y, rot ---
-    function wrap180(d){ if (d > 180) d -= 360; if (d < -180) d += 360; return d; }
-    function clamp01(v){ return Math.max(0, Math.min(1, v)); }
-
-    window.addEventListener('deviceorientation', (ev) => {
-      if (typeof ev.alpha === 'number') lastAlpha = ev.alpha;
-      if (typeof ev.beta  === 'number') lastBeta  = ev.beta;
-      if (typeof ev.gamma === 'number') lastGamma = ev.gamma;
+    window.addEventListener('deviceorientation', ev => {
+      lastAlpha = ev.alpha;
+      lastBeta  = ev.beta;
       if (!drawing) return;
 
-      // Deltas relativ zur frisch gesetzten Nullstellung
-      let dA = wrap180(lastAlpha - zeroA); // [-180..180]
-      let dB = lastBeta  - zeroB;          // ca. [-90..90]
-      let dG = lastGamma - zeroG;          // ca. [-90..90]
+      let dA = lastAlpha - zeroA;
+      let dB = lastBeta - zeroB;
+      if (dA > 180) dA -= 360;
+      if (dA < -180) dA += 360;
 
-      // Begrenzung
-      dA = Math.max(-MAX_HOR, Math.min(MAX_HOR, dA));
-      dB = Math.max(-MAX_VER, Math.min(MAX_VER, dB));
-      dG = Math.max(-MAX_ROT, Math.min(MAX_ROT, dG));
+      const maxHor = 20;
+      const maxVer = 20;
+      dA = Math.max(-maxHor, Math.min(maxHor, dA));
+      dB = Math.max(-maxVer, Math.min(maxVer, dB));
 
-      // Achsen wie im Original: 1 - norm(...)
-      const x = 1 - ((dA + MAX_HOR) / (2*MAX_HOR));
-      const y = 1 - ((dB + MAX_VER) / (2*MAX_VER));
-      const rot = (dG * Math.PI) / 180; // Radiant
+      const x = 1 - ((dA + maxHor) / (2 * maxHor));
+      const y = 1 - ((dB + maxVer) / (2 * maxVer));
 
-      socket.emit('draw', { x, y, rot, deviceId: socket.id, color: myColor });
+      socket.emit('draw', {
+        deviceId: socket.id,
+        x, y,
+        color: myColor
+      });
     });
   </script>
 </body>
