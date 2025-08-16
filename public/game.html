@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.2.0)</title>
+  <title>Game Display – Paddle-Line (v2.2.2)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version  { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.2.0 Game</div>
+  <div id="version">v2.2.2 Game</div>
   <div id="metrics">—</div>
   <div id="lagPanel">
     <h3>Übertragungs-Lag (pro Controller)
@@ -36,7 +36,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // WebSocket only
+    // WebSocket (Polling bleibt serverseitig erlaubt, hier bevorzugt WebSocket)
     const socket = io({ transports:['websocket'], upgrade:false });
     socket.on('connect', () => { socket.emit('identify',{ role:'display', deviceId: socket.id }); socket.emit('request-settings'); });
 
@@ -84,19 +84,25 @@
     });
 
     // Settings
-    let paddleLength = 80;   // 1/3 gegenüber früheren langen Balken
+    let paddleLength = 80;   // kürzer, präziser
     let paddleWidth  = 14;
 
-    const FRICTION=0.995, ANGULAR_FRICTION=0.95, BOUNCE=0.8, RESTITUTION_PAD=1.45, CTRL_NORM_SCALE=0.0012, PTR_TTL=1000;
+    // Physik-Parameter
+    const FRICTION=0.995, ANGULAR_FRICTION=0.96;
+    const WALL_E = 0.95;                 // Elastizität an der Maske (weiß)
+    const EDGE_E = 0.85;                 // Elastizität an Canvas-Rand
+    const RESTITUTION_PAD = 1.20;        // Rückprallfaktor Schläger vs. Ball (relativ!)
+    const PTR_TTL=1000;
 
-    // --- EMA + Segment-Interpolation Parameter (dt-unabhängig) ---
-    const K_POS = 0.35;  // wie stark Roh→EMA pro Paket (0..1)
-    const K_ANG = 0.25;  // Winkel-EMA
-    const SEG_DUR_MIN = 18;    // ms (für sehr schnelle Pakete)
-    const SEG_DUR_MAX = 110;   // ms (bei größeren Gaps)
-    const CLAMP_VEL   = 2500;  // px/s max. für Interpolation (gegen Ausreißer)
+    // --- EMA + Segment-Interpolation (knackiger) ---
+    // Höheres K -> folgt schneller; kürzere Segmente -> weniger „Schwamm“
+    const K_POS = 0.60;  // Position
+    const K_ANG = 0.40;  // Winkel
+    const SEG_DUR_MIN = 10;     // ms
+    const SEG_DUR_MAX = 60;     // ms
+    const CLAMP_VEL   = 4000;   // px/s
 
-    // Hilfsfunktionen für Winkel (in Rad)
+    // Helpers
     function angLerp(a, b, t){
       let d = b - a;
       while (d > Math.PI)  d -= 2*Math.PI;
@@ -105,20 +111,19 @@
     }
     const smoothstep = t => (t<=0?0:(t>=1?1:t*t*(3-2*t)));
 
-    // Paddles + Farblogik
+    // Paddles + Farben
     const paddles = {}; // key -> paddle state
     const deviceColors = {};
     const COLORS=['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#008080','#9a6324','#800000','#469990'];
     let colorIdx = 0;
-
-    function keyLabel(k){ return (typeof k==='number') ? k.toString(36) : String(k).slice(0,6); }
+    const keyLabel = k => (typeof k==='number') ? k.toString(36) : String(k).slice(0,6);
 
     // Ball
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
     socket.on('settings', s => { if(typeof s.paddleWidth==='number') paddleWidth=s.paddleWidth; });
 
-    // Eingehende Draw-Events: Binär (24 Byte) ODER JSON (Fallback)
+    // Eingehende Draw-Events: Binär (24 B) ODER JSON (Fallback)
     socket.on('draw', (payload)=>{
       const now = performance.now();
       let key, xN, yN, angleDeg, seq, flags=0;
@@ -155,7 +160,7 @@
 
       if (!p) {
         p = paddles[key] = {
-          // Roh-/EMA-Ziele
+          // EMA-Ziele
           emaX: rawX, emaY: rawY, emaA: rawA,
           // Anzeige (interpoliert)
           x: rawX, y: rawY, a: rawA,
@@ -180,26 +185,29 @@
           p.lastSeq = Math.max(p.lastSeq, seq);
         }
 
-        // --- Konstante EMA auf den Rohwerten ---
+        // --- Konstante EMA (schnelleres Folgen) ---
         p.emaX += (rawX - p.emaX) * K_POS;
         p.emaY += (rawY - p.emaY) * K_POS;
         p.emaA  = angLerp(p.emaA, rawA, K_ANG);
 
-        // Bei Start-Flag: harte Synchronisierung
+        // Start-Flag: harte Sync
         if (flags & 1) {
           p.x = p.emaX = rawX;
           p.y = p.emaY = rawY;
           p.a = p.emaA = rawA;
         }
 
-        // --- neues Interpolations-Segment (anti-Gap) ---
-        p.sx = p.x;     p.sy = p.y;     p.sa = p.a;       // Start ist aktuelle Anzeige
-        p.ex = p.emaX;  p.ey = p.emaY;  p.ea = p.emaA;    // Ziel ist geglättetes Ende
+        // --- neues Interpolations-Segment (anti-Gap, mit Catch-up) ---
+        p.sx = p.x;     p.sy = p.y;     p.sa = p.a;
+        p.ex = p.emaX;  p.ey = p.emaY;  p.ea = p.emaA;
         p.st = 0;
-        const dur = Math.max(SEG_DUR_MIN, Math.min(SEG_DUR_MAX, dt || 33));
+        const ideal = 1000 / Math.max(15, p.expectedFps);     // z.B. ~33ms
+        let dur = Math.min(ideal, dt * 0.7);                  // schneller als Gap → holt auf
+        if (!isFinite(dur) || dur <= 0) dur = ideal;
+        dur = Math.max(SEG_DUR_MIN, Math.min(SEG_DUR_MAX, dur));
         p.sd = dur;
 
-        // Cap der impliziten Geschwindigkeit (gegen Sprünge)
+        // Cap implizite Geschwindigkeit
         const vx = (p.ex - p.sx) / (p.sd/1000);
         const vy = (p.ey - p.sy) / (p.sd/1000);
         const v = Math.hypot(vx, vy);
@@ -214,7 +222,7 @@
       if (typeof seq === 'number') socket.emit('draw-ack', { deviceKey: key, seq });
     });
 
-    // Display → Control: Rate-Suggest (adaptiv zu Metriken)
+    // Display → Control: Rate-Suggest (wie zuvor)
     setInterval(()=>{
       for(const k in paddles){
         const p = paddles[k];
@@ -255,7 +263,7 @@
       const now = performance.now();
       cleanup(now);
 
-      // --- Segment-Interpolation (ohne dt-Abhängigkeit) ---
+      // --- Interpolation ---
       for(const k in paddles){
         const p = paddles[k];
         p.st += dt*1000;
@@ -265,7 +273,7 @@
         p.a = angLerp(p.sa, p.ea, s);
       }
 
-      // Paddle-Kollisionen (unverändert)
+      // --- Kollisionen mit Schlägern (RELATIVE VELOCITY!) ---
       for(const k in paddles){
         const p = paddles[k];
         const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
@@ -285,40 +293,74 @@
 
         if (dist <= hitDist) {
           const d = dist || 1; nx/=d; ny/=d;
-          const vDotN = ball.vx*nx + ball.vy*ny;
-          if (vDotN < 0) { ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx; ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny; }
-          const pen = hitDist - dist + 1.0; ball.x += nx * pen; ball.y += ny * pen;
-          const tx = -ny, ty = nx; const tangential = ball.vx*tx + ball.vy*ty; ball.angularVelocity += tangential * 0.001;
+
+          // Penetration minimal lösen
+          const pen = hitDist - dist + 0.5;
+          ball.x += nx * pen;
+          ball.y += ny * pen;
+
+          // Relative Normalgeschwindigkeit (Ball vs. Paddlespitze)
+          const dtSafe = Math.max(1/120, dt || 0);
+          const pvx = (p.ex - p.sx) / (p.sd/1000 || dtSafe); // angenäherte Paddle-Geschwindigkeit über Segment
+          const pvy = (p.ey - p.sy) / (p.sd/1000 || dtSafe);
+          const vRelN = (ball.vx - pvx) * nx + (ball.vy - pvy) * ny;
+
+          // Rückprall entlang der Normalen (nur wenn Annäherung)
+          if (vRelN < 0) {
+            const jn = -(1 + RESTITUTION_PAD) * vRelN;
+            ball.vx += jn * nx;
+            ball.vy += jn * ny;
+          }
+
+          // Tangentiale Reibung + Spin
+          const tx = -ny, ty = nx;
+          const vRelT = (ball.vx - pvx) * tx + (ball.vy - pvy) * ty;
+          const fr = 0.015;
+          ball.vx -= vRelT * fr * tx;
+          ball.vy -= vRelT * fr * ty;
+          ball.angularVelocity += vRelT * 0.002;
         }
       }
 
       // Ballphysik
       ball.x += ball.vx*dt; ball.y += ball.vy*dt; ball.angle += ball.angularVelocity*dt;
 
-      // Masken-Kollision
-      let correctionX = 0, correctionY = 0, hitCount = 0;
-      for(let i=0;i<16;i++){
-        const ang = i*(Math.PI*2/16);
+      // --- Maske: WEISS ist Wand (vorher dunkel) ---
+      // robustere Reflexion mit Elastizität WALL_E
+      let nxSum = 0, nySum = 0, hitCount = 0;
+      for(let i=0;i<20;i++){
+        const ang = i*(Math.PI*2/20);
         const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
         const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
           const d = maskCtx.getImageData(ex,ey,1,1).data;
-          if(d[0]<200 || d[1]<200 || d[2]<200){ const nx = Math.cos(ang); const ny = Math.sin(ang); correctionX += nx; correctionY += ny; hitCount++; }
+          // Weiß = Wand
+          if(d[0]>240 && d[1]>240 && d[2]>240){
+            nxSum += Math.cos(ang);
+            nySum += Math.sin(ang);
+            hitCount++;
+          }
         }
       }
       if (hitCount > 0) {
-        correctionX/=hitCount; correctionY/=hitCount;
-        const vDotN = ball.vx*correctionX + ball.vy*correctionY;
-        ball.vx -= 2*vDotN*correctionX; ball.vy -= 2*vDotN*correctionY;
-        ball.x += correctionX * 2; ball.y += correctionY * 2;
+        let nx = nxSum / hitCount, ny = nySum / hitCount;
+        const nd = Math.hypot(nx, ny) || 1; nx/=nd; ny/=nd;
+        const vDotN = ball.vx*nx + ball.vy*ny;
+        // Reflexion mit Elastizität
+        ball.vx -= (1 + WALL_E) * vDotN * nx;
+        ball.vy -= (1 + WALL_E) * vDotN * ny;
+        // sanft aus der Wand schieben
+        ball.x += nx * 3;
+        ball.y += ny * 3;
       }
 
       // Canvas-Grenzen
-      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
-      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
-      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
-      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-EDGE_E; ball.angularVelocity*=-1; }
+      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-EDGE_E; ball.angularVelocity*=-1; }
+      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-EDGE_E; ball.angularVelocity*=-1; }
+      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-EDGE_E; ball.angularVelocity*=-1; }
 
+      // Dämpfung
       ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
 
       // Kurzmetrics
