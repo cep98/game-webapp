@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.0.1)</title>
+  <title>Game Display – Paddle-Line (v2.0.2)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:1; }
@@ -11,7 +11,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.0.1 Game</div>
+  <div id="version">v2.0.2 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
@@ -32,7 +32,6 @@
           ballBase   = new Image(),
           ballShadow = new Image();
 
-    // relative Pfade, da /public der Static-Root ist
     bgImage.src    = 'background.png';
     maskImage.src  = 'mask.png';
     ballBase.src   = 'ball-base.png';
@@ -57,12 +56,13 @@
 
     // Settings
     let smoothing      = 0.5;
-    let paddleLength   = 240;
+    let paddleLength   = 80;  // war 240 → jetzt 1/3
     let paddleWidth    = 14;
 
     const FRICTION         = 0.995,
           ANGULAR_FRICTION = 0.95,
-          BOUNCE           = 0.8,
+          BOUNCE           = 0.8,   // Wände
+          RESTITUTION_PAD  = 1.05,  // Schläger-Bounce (leicht „knackig“)
           BASE_STRENGTH    = 0.15,
           SPEED_SCALE      = 0.0002,
           PTR_TTL          = 500;
@@ -108,11 +108,6 @@
       }
     }
 
-    function reflectVelocityOnNormal(vx, vy, nx, ny) {
-      const dot = vx*nx + vy*ny;
-      return [vx - 2*dot*nx, vy - 2*dot*ny];
-    }
-
     function update(dt){
       if(!maskCtx) return;
       cleanup(performance.now());
@@ -139,23 +134,33 @@
           const d = dist || 1;
           nx /= d; ny /= d;
 
+          // Annäherung nur reflektieren, wenn Ball auf Paddle zu fliegt
+          const vDotN = ball.vx*nx + ball.vy*ny;
+          if (vDotN < 0) {
+            // Elastische Reflexion mit Restitution
+            ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx;
+            ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny;
+          }
+
+          // Bewegung des Controllers als Zusatz-Impuls entlang der Normalen
           const segLen = Math.hypot(p.sx - p.px, p.sy - p.py);
           const deltaT = Math.max(p.t - p.pt, 1);
           const ctrlSpeed = segLen * 1000 / deltaT;
           const strength = BASE_STRENGTH + ctrlSpeed * SPEED_SCALE;
-
           ball.vx += nx * strength;
           ball.vy += ny * strength;
-          [ball.vx, ball.vy] = reflectVelocityOnNormal(ball.vx, ball.vy, nx, ny);
 
+          // Rausdrücken, damit kein „Schieben/Kleben“
           const pen = hitDist - dist + 0.5;
           ball.x += nx * pen;
           ball.y += ny * pen;
 
+          // Drehimpuls durch tangentiale Komponente
           const tx = -ny, ty = nx;
           const tangential = ball.vx*tx + ball.vy*ty;
           ball.angularVelocity += tangential * 0.001;
 
+          // Zeitstempel für ctrlSpeed-Logik
           p.pt = p.t;
         }
       }
