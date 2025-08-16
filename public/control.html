@@ -10,153 +10,114 @@
   <title>Control</title>
   <style>
     html, body {
-      margin:0; padding:0; height:100%; background:#222;
-      color:#fff; font-family:sans-serif;
+      margin:0; padding:0; height:100%; background:#222; color:#fff; font-family:sans-serif;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
-      -webkit-user-select:none; user-select:none;
-      touch-action: none; overscroll-behavior: none;
+      -webkit-user-select:none; user-select:none; touch-action:none; overscroll-behavior:none;
     }
     #version { position:absolute; top:10px; right:10px; opacity:0.7; font-size:0.9em; }
-    .btn {
-      border:4px solid transparent; border-radius:12px;
-      background:#444; width:110px; height:110px; margin:10px;
-    }
+    .btn { border:4px solid transparent; border-radius:12px; background:#444; width:110px; height:110px; margin:10px; }
     #gyroBtn { border-radius:16px; }
     #laserBtn { border-radius:50%; background:#cc0000; display:none; }
+    #net { position:fixed; bottom:8px; left:8px; font:12px/1.2 monospace; opacity:.85; background:#0008; padding:6px 8px; border-radius:8px; }
     @media (orientation: landscape) {
-      body::after {
-        content: "Bitte im Hochformat nutzen (Rotation gesperrt).";
-        position: fixed; bottom: 12px; left: 0; right: 0;
-        text-align: center; font-size: 12px; opacity: .6;
-      }
+      body::after { content:"Bitte im Hochformat nutzen (Rotation gesperrt)."; position:fixed; bottom:12px; left:0; right:0; text-align:center; font-size:12px; opacity:.6; }
     }
   </style>
 </head>
 <body>
-  <div id="version">v2.2 Control</div>
+  <div id="version">v2.1.1 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
+  <div id="net">RTT: – ms | send FPS: –</div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // === OneEuroFilter (wie v2.1) ===
+    class OneEuroFilter {
+      constructor(minCutoff=1.2, beta=0.03, dCutoff=1.0) { this.minCutoff=minCutoff; this.beta=beta; this.dCutoff=dCutoff; this.xHat=null; this.dxHat=0; }
+      alpha(fc, dt){ const tau = 1/(2*Math.PI*fc); return 1/(1+tau/dt); }
+      filter(x, dt){ if(dt<=0||!isFinite(dt)) dt=1/60; if(this.xHat===null){ this.xHat=x; this.dxHat=0; return x; }
+        const dx=(x-this.xHat)/dt, aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat;
+        const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat), aX=this.alpha(cutoff,dt);
+        this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat; }
+      reset(x){ this.xHat=x; this.dxHat=0; }
+    }
+
     const socket   = io();
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
+    const netBox   = document.getElementById('net');
 
     let myColor   = null;
     let drawing   = false;
     let sentStart = false;
 
-    // ---- Rohdaten ----
-    let rawTiltX = 0, rawTiltY = 0; // aus DeviceMotion (Gravitation)
-    let rawGamma = 0;               // aus DeviceOrientation (Roll)
+    let lastAlpha=0, lastBeta=0, lastGamma=0;
+    let zeroA=0, zeroB=0, zeroG=0;
 
-    // ---- Gefilterte Werte (einfacher Low-Pass) ----
-    let filtTiltX = 0, filtTiltY = 0, filtGamma = 0;
+    // Filter wie v2.1
+    const fA = new OneEuroFilter(1.2, 0.03, 1.0);
+    const fB = new OneEuroFilter(1.2, 0.03, 1.0);
+    const fG = new OneEuroFilter(1.8, 0.03, 1.0);
 
-    // ---- Nullpunkte (beim ersten Laser-Druck) ----
-    let zeroTiltX = 0, zeroTiltY = 0, zeroGamma = 0;
+    let maxHor=20, maxVer=20;
 
-    // Admin-Limits (Reichweiten-Mapping)
-    let maxHor = 20, maxVer = 20;
-
-    // Fallback-Flags
-    let hasMotion = false; // ob DeviceMotion brauchbar ist
+    // --- Lag-Diagnose: Sequenzen & RTT ---
+    let seq = 0;
+    const sendTimes = new Map(); // seq -> tSend
+    let rttMs = NaN;
+    let fpsAvg = 0; let lastLoopT = performance.now();
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
-    socket.on('assign-color', color => {
-      myColor = color;
-      laserBtn.style.borderColor = myColor;
-      gyroBtn.style.borderColor  = myColor;
+    socket.on('assign-color', color => { myColor=color; laserBtn.style.borderColor=color; gyroBtn.style.borderColor=color; });
+    socket.on('settings', s => { if(typeof s.maxHor==='number') maxHor=s.maxHor; if(typeof s.maxVer==='number') maxVer=s.maxVer; });
+
+    socket.on('draw-ack', ({ seq:ackSeq }) => {
+      const t0 = sendTimes.get(ackSeq);
+      if (t0 !== undefined) {
+        const rtt = performance.now() - t0;
+        // EWMA
+        rttMs = isNaN(rttMs) ? rtt : (0.85*rttMs + 0.15*rtt);
+        sendTimes.delete(ackSeq);
+      }
     });
 
-    socket.on('settings', s => {
-      if (typeof s.maxHor === 'number') maxHor = s.maxHor;
-      if (typeof s.maxVer === 'number') maxVer = s.maxVer;
-    });
-
-    // Portrait-Lock (best effort)
-    async function tryLockPortrait() {
+    async function tryLockPortrait(){
       try {
-        if (document.documentElement.requestFullscreen) {
-          await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
-        } else if (document.documentElement.webkitRequestFullscreen) {
-          await document.documentElement.webkitRequestFullscreen();
-        }
-        if (screen.orientation && screen.orientation.lock) {
-          await screen.orientation.lock('portrait');
-        }
+        if (document.documentElement.requestFullscreen) await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
+        if (screen.orientation?.lock) await screen.orientation.lock('portrait');
       } catch {}
     }
     document.addEventListener('touchmove', e => e.preventDefault(), { passive:false });
     window.addEventListener('orientationchange', tryLockPortrait);
 
-    // Permission + UI
     gyroBtn.addEventListener('click', async () => {
       try {
-        const reqs = [];
         if (DeviceOrientationEvent?.requestPermission) {
-          reqs.push(DeviceOrientationEvent.requestPermission().catch(()=> 'denied'));
-        }
-        if (DeviceMotionEvent?.requestPermission) {
-          reqs.push(DeviceMotionEvent.requestPermission().catch(()=> 'denied'));
-        }
-        if (reqs.length) {
-          const results = await Promise.all(reqs);
-          if (results.some(r => r === 'denied')) {
-            alert('Gyro-/Motion-Zugriff benötigt!');
-            return;
-          }
+          const p = await DeviceOrientationEvent.requestPermission();
+          if (p !== 'granted') return alert('Gyroskop-Zugriff benötigt!');
         }
         await tryLockPortrait();
-        gyroBtn.style.display  = 'none';
+        gyroBtn.style.display = 'none';
         laserBtn.style.display = 'block';
-      } catch (e) {
-        alert('Sensoren nicht verfügbar.');
-      }
+      } catch { alert('Gyro nicht verfügbar.'); }
     });
 
-    // ---- Sensor-Leser ----
-    // DeviceMotion: stabil für Neigung (keine 0/360-Sprünge)
-    window.addEventListener('devicemotion', ev => {
-      const g = ev.accelerationIncludingGravity;
-      if (!g) return;
-      // Tilt aus Gravitation (Grad)
-      // tx: links/rechts, ty: vor/zurück
-      const tx = Math.atan2(g.x || 0, g.z || 0) * 180 / Math.PI;
-      const ty = Math.atan2(g.y || 0, g.z || 0) * 180 / Math.PI;
-      // Sanfter Clamp der Rohwerte (extreme outlier weg)
-      rawTiltX = Math.max(-85, Math.min(85, tx));
-      rawTiltY = Math.max(-85, Math.min(85, ty));
-      hasMotion = true;
-    });
-
-    // DeviceOrientation: nur für Roll (gamma), robust genug im Bereich [-90,90]
     window.addEventListener('deviceorientation', ev => {
-      if (typeof ev.gamma === 'number') {
-        rawGamma = Math.max(-90, Math.min(90, ev.gamma));
-      }
-      // Fallback, falls kein DeviceMotion vorhanden:
-      if (!hasMotion) {
-        if (typeof ev.gamma === 'number') rawTiltX = ev.gamma;
-        if (typeof ev.beta  === 'number') rawTiltY = ev.beta;
-      }
+      lastAlpha = ev.alpha ?? 0;
+      lastBeta  = ev.beta  ?? 0;
+      lastGamma = ev.gamma ?? 0;
     });
 
-    // Laser-Button
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
-      drawing = true;
-      sentStart = false;
-
-      // Filter auf aktuellen Zustand setzen
-      filtTiltX = rawTiltX; filtTiltY = rawTiltY; filtGamma = rawGamma;
-      // Nullpunkte merken
-      zeroTiltX = filtTiltX; zeroTiltY = filtTiltY; zeroGamma = filtGamma;
+      drawing = true; sentStart = false;
+      fA.reset(lastAlpha); fB.reset(lastBeta); fG.reset(lastGamma);
+      zeroA = fA.xHat; zeroB = fB.xHat; zeroG = fG.xHat;
     }, { passive:false });
 
     laserBtn.addEventListener('touchend', e => {
@@ -165,49 +126,42 @@
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    // ---- Konstant getaktetes Senden + Low-Pass an der Quelle ----
-    let lastT = performance.now();
-    function loop(tNow) {
-      const dt = Math.max(1/120, Math.min(1/20, (tNow - lastT)/1000)); // clamp 8–50 ms
-      lastT = tNow;
-
-      // einfacher Low-Pass (Zeitkonstanten klein halten)
-      const tauTilt = 0.08; // 80ms
-      const aTilt   = dt / (tauTilt + dt);
-      filtTiltX += (rawTiltX - filtTiltX) * aTilt;
-      filtTiltY += (rawTiltY - filtTiltY) * aTilt;
-
-      const tauG = 0.05; // 50ms
-      const aG   = dt / (tauG + dt);
-      filtGamma += (rawGamma - filtGamma) * aG;
+    function loop(t){
+      const dt = Math.max(1/120, Math.min(1/20, (t - lastLoopT)/1000));
+      lastLoopT = t;
+      // FPS (EWMA)
+      const instFps = 1/dt;
+      fpsAvg = fpsAvg ? (0.9*fpsAvg + 0.1*instFps) : instFps;
 
       if (drawing) {
-        // Deltas relativ zum Nullpunkt
-        let dX = filtTiltX - zeroTiltX; // links/rechts
-        let dY = filtTiltY - zeroTiltY; // vor/zurück
-        let dG = filtGamma - zeroGamma; // Roll → Paddle-Winkel
+        const aF = fA.filter(lastAlpha, dt);
+        const bF = fB.filter(lastBeta,  dt);
+        let   gF = fG.filter(lastGamma, dt);
 
-        // Reichweite begrenzen
-        dX = Math.max(-maxHor, Math.min(maxHor, dX));
-        dY = Math.max(-maxVer, Math.min(maxVer, dY));
-        dG = Math.max(-75, Math.min(75, dG)); // angenehmer Bereich
+        let dA = aF - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
+        let dB = bF - zeroB;
+        let dG = gF - zeroG;
 
-        // Normalisieren auf [0..1]
-        const x = 1 - ((dX + maxHor) / (2 * maxHor));
-        const y = 1 - ((dY + maxVer) / (2 * maxVer));
+        dA = Math.max(-maxHor, Math.min(maxHor, dA));
+        dB = Math.max(-maxVer, Math.min(maxVer, dB));
+        dG = Math.max(-90, Math.min(90, dG));
 
-        // Sicherheitscheck gegen NaN
-        if (isFinite(x) && isFinite(y) && isFinite(dG)) {
-          socket.emit('draw', {
-            x, y,
-            angleDeg: dG,
-            deviceId: socket.id,
-            color: myColor,
-            isStart: !sentStart
-          });
+        const x = 1 - ((dA + maxHor) / (2 * maxHor));
+        const y = 1 - ((dB + maxVer) / (2 * maxVer));
+
+        if (isFinite(x) && isFinite(y)) {
+          const payload = {
+            x, y, angleDeg: dG, deviceId: socket.id, color: myColor, isStart: !sentStart,
+            seq: ++seq
+          };
+          sendTimes.set(seq, performance.now());
+          socket.emit('draw', payload);
           sentStart = true;
         }
       }
+
+      // Netzbox
+      netBox.textContent = `RTT: ${isNaN(rttMs)?'–':Math.round(rttMs)} ms | send FPS: ${fpsAvg?fpsAvg.toFixed(0):'–'}`;
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
