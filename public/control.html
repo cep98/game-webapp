@@ -14,7 +14,6 @@
       color:#fff; font-family:sans-serif;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
       -webkit-user-select:none; user-select:none;
-      /* verhindert Scroll/Back-Swipe-Effekte */
       touch-action: none; overscroll-behavior: none;
     }
     #version {
@@ -28,7 +27,6 @@
     }
     #gyroBtn { border-radius:16px; }
     #laserBtn { border-radius:50%; background:#cc0000; display:none; }
-    /* Hinweis falls doch Landscape aktiv ist */
     @media (orientation: landscape) {
       body::after {
         content: "Bitte im Hochformat nutzen (Rotation gesperrt).";
@@ -39,12 +37,44 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.0.3 Control</div>
+  <div id="version">v2.1 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // -------- 1€-Filter (adaptiver Low-Pass) --------
+    class OneEuroFilter {
+      constructor(minCutoff = 1.0, beta = 0.02, dCutoff = 1.0) {
+        this.minCutoff = minCutoff;
+        this.beta = beta;
+        this.dCutoff = dCutoff;
+        this.xHat = null;
+        this.dxHat = 0;
+      }
+      alpha(fc, dt) {
+        const tau = 1 / (2 * Math.PI * fc);
+        return 1 / (1 + tau / dt);
+      }
+      filter(x, dt) {
+        if (dt <= 0 || !isFinite(dt)) dt = 1/60;
+        if (this.xHat === null) { // initialisieren
+          this.xHat = x;
+          this.dxHat = 0;
+          return x;
+        }
+        const dx = (x - this.xHat) / dt;
+        const aD = this.alpha(this.dCutoff, dt);
+        this.dxHat = aD * dx + (1 - aD) * this.dxHat;
+
+        const cutoff = this.minCutoff + this.beta * Math.abs(this.dxHat);
+        const aX = this.alpha(cutoff, dt);
+        this.xHat = aX * x + (1 - aX) * this.xHat;
+        return this.xHat;
+      }
+      reset(x) { this.xHat = x; this.dxHat = 0; }
+    }
+
     const socket   = io();
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
@@ -53,9 +83,18 @@
     let drawing   = false;
     let sentStart = false;
 
-    let lastAlpha = 0, lastBeta = 0, lastGamma = 0;
+    // Rohwerte vom Sensor
+    let rawA = 0, rawB = 0, rawG = 0;
+
+    // Kalibrierte Nullpunkte
     let zeroA = 0, zeroB = 0, zeroG = 0;
 
+    // Filter pro Achse
+    const fA = new OneEuroFilter(1.2, 0.03, 1.0);
+    const fB = new OneEuroFilter(1.2, 0.03, 1.0);
+    const fG = new OneEuroFilter(1.8, 0.03, 1.0); // Gamma leicht höher cutoff
+
+    // Limits aus Admin (nur für Reichweite)
     let maxHor = 20, maxVer = 20;
 
     socket.on('connect', () => {
@@ -74,10 +113,9 @@
       if (typeof s.maxVer === 'number') maxVer = s.maxVer;
     });
 
-    // Versuche die Bildschirm-Orientierung auf "portrait" zu sperren
+    // Portrait-Lock (best effort)
     async function tryLockPortrait() {
       try {
-        // einige Browser verlangen Vollbild für das Lock
         if (document.documentElement.requestFullscreen) {
           await document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(()=>{});
         } else if (document.documentElement.webkitRequestFullscreen) {
@@ -86,12 +124,9 @@
         if (screen.orientation && screen.orientation.lock) {
           await screen.orientation.lock('portrait');
         }
-      } catch (e) {
-        // Ignorieren – auf iOS evtl. nicht verfügbar
-      }
+      } catch {}
     }
 
-    // Allgemein: Pinch/Scroll komplett eliminieren
     document.addEventListener('touchmove', e => e.preventDefault(), { passive:false });
 
     gyroBtn.addEventListener('click', async () => {
@@ -108,16 +143,24 @@
       }
     });
 
-    // Falls das System trotzdem dreht: erneut sperren
-    window.addEventListener('orientationchange', () => {
-      tryLockPortrait();
+    window.addEventListener('orientationchange', tryLockPortrait);
+
+    // Nur Rohwerte sammeln – gefiltert & gesendet wird in rAF-Takt
+    window.addEventListener('deviceorientation', ev => {
+      rawA = ev.alpha ?? 0;
+      rawB = ev.beta  ?? 0;
+      rawG = ev.gamma ?? 0;
     });
 
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
       sentStart = false;
-      zeroA = lastAlpha; zeroB = lastBeta; zeroG = lastGamma;
+
+      // Filter mit aktuellem Zustand initialisieren
+      fA.reset(rawA); fB.reset(rawB); fG.reset(rawG);
+      // Nullpunkte setzen auf gefilterte Werte
+      zeroA = fA.xHat; zeroB = fB.xHat; zeroG = fG.xHat;
     }, { passive:false });
 
     laserBtn.addEventListener('touchend', e => {
@@ -126,34 +169,44 @@
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    window.addEventListener('deviceorientation', ev => {
-      lastAlpha = ev.alpha ?? 0;
-      lastBeta  = ev.beta  ?? 0;
-      lastGamma = ev.gamma ?? 0;
-      if (!drawing) return;
+    // Konstant getaktetes Senden (entkoppelt von Sensor-Bursts)
+    let lastT = performance.now();
+    function loop(t) {
+      const dt = (t - lastT) / 1000; // sec
+      lastT = t;
 
-      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
-      let dB = lastBeta  - zeroB;
-      let dG = lastGamma - zeroG;
+      if (drawing) {
+        const aF = fA.filter(rawA, dt);
+        const bF = fB.filter(rawB, dt);
+        let gF   = fG.filter(rawG, dt);
 
-      dA = Math.max(-maxHor, Math.min(maxHor, dA));
-      dB = Math.max(-maxVer, Math.min(maxVer, dB));
-      const x = 1 - ((dA + maxHor) / (2 * maxHor));
-      const y = 1 - ((dB + maxVer) / (2 * maxVer));
+        // deltas zur Kalibrierung
+        let dA = aF - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
+        let dB = bF - zeroB;
+        let dG = gF - zeroG;
 
-      if (dG > 90) dG = 90;
-      if (dG < -90) dG = -90;
+        // auf sinnvolle Bereiche clampen
+        dA = Math.max(-maxHor, Math.min(maxHor, dA));
+        dB = Math.max(-maxVer, Math.min(maxVer, dB));
+        if (dG > 90) dG = 90;
+        if (dG < -90) dG = -90;
 
-      const payload = {
-        x, y,
-        angleDeg: dG,
-        deviceId: socket.id,
-        color: myColor,
-        isStart: !sentStart
-      };
-      socket.emit('draw', payload);
-      sentStart = true;
-    });
+        // Normalisiertes Spielfeld
+        const x = 1 - ((dA + maxHor) / (2 * maxHor));
+        const y = 1 - ((dB + maxVer) / (2 * maxVer));
+
+        socket.emit('draw', {
+          x, y,
+          angleDeg: dG,
+          deviceId: socket.id,
+          color: myColor,
+          isStart: !sentStart
+        });
+        sentStart = true;
+      }
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
   </script>
 </body>
 </html>
