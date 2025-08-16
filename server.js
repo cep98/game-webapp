@@ -1,44 +1,72 @@
 const express = require('express');
-const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http);
+const http    = require('http');
+const { Server } = require('socket.io');
 
-const port = process.env.PORT || 3000;
+const app    = express();
+const server = http.createServer(app);
+const io     = new Server(server);
+
+const PORT = process.env.PORT || 3000;
 app.use(express.static('public'));
 
-const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231'];
-let colorIndex = 0;
+const connections = new Map();
 
-io.on('connection', socket => {
-  let role = null;
-  let deviceId = null;
+io.on('connection', (socket) => {
+  console.log('Verbunden:', socket.id);
 
-  socket.on('identify', data => {
-    role = data.role;
-    deviceId = data.deviceId || socket.id;
+  socket.on('identify', ({ role, deviceId }) => {
+    socket.role = role;
+    socket.deviceId = deviceId;
+    connections.set(deviceId, socket);
+
+    // Farbe für Laser zuweisen
     if (role === 'control') {
-      const color = COLORS[colorIndex++ % COLORS.length];
-      io.emit('assign-color', color); // Direkt an alle für Einfachheit
+      const color = getColorForDevice(deviceId);
+      socket.emit('assign-color', color);
     }
   });
 
   socket.on('draw', data => {
-    if (!data || !data.deviceId) return;
-    io.emit('draw', data);
+    // Weiterleiten an alle Displays
+    for (let [id, s] of connections) {
+      if (s.role === 'display') {
+        s.emit('draw', data);
+      }
+    }
   });
 
-  socket.on('draw-end', data => {
-    if (!data || !data.deviceId) return;
-    io.emit('draw-end', data);
+  socket.on('draw-end', ({ deviceId }) => {
+    for (let [id, s] of connections) {
+      if (s.role === 'display') {
+        s.emit('draw-end', { deviceId });
+      }
+    }
   });
 
   socket.on('disconnect', () => {
-    if (role === 'control') {
-      io.emit('draw-end', { deviceId });
+    console.log('Getrennt:', socket.id);
+    connections.delete(socket.deviceId);
+    for (let [id, s] of connections) {
+      if (s.role === 'display') {
+        s.emit('draw-end', { deviceId: socket.deviceId });
+      }
     }
   });
 });
 
-http.listen(port, () => {
-  console.log(`Server läuft auf Port ${port}`);
+// Einfache, feste Farbauswahl
+const COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4'];
+const colorMap = new Map();
+let colorIndex = 0;
+function getColorForDevice(deviceId) {
+  if (!colorMap.has(deviceId)) {
+    const color = COLORS[colorIndex % COLORS.length];
+    colorMap.set(deviceId, color);
+    colorIndex++;
+  }
+  return colorMap.get(deviceId);
+}
+
+server.listen(PORT, () => {
+  console.log(`Server läuft auf Port ${PORT}`);
 });
