@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.1)</title>
+  <title>Game Display – Paddle-Line (v2.2)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:1; }
@@ -11,41 +11,11 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.1 Game</div>
+  <div id="version">v2.2 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // -------- 1€-Filter (Display-Seite) --------
-    class OneEuroFilter {
-      constructor(minCutoff = 1.0, beta = 0.015, dCutoff = 1.0) {
-        this.minCutoff = minCutoff;
-        this.beta = beta;
-        this.dCutoff = dCutoff;
-        this.xHat = null;
-        this.dxHat = 0;
-      }
-      alpha(fc, dt) {
-        const tau = 1 / (2 * Math.PI * fc);
-        return 1 / (1 + tau / dt);
-      }
-      filter(x, dt) {
-        if (dt <= 0 || !isFinite(dt)) dt = 1/60;
-        if (this.xHat === null) {
-          this.xHat = x; this.dxHat = 0; return x;
-        }
-        const dx = (x - this.xHat) / dt;
-        const aD = this.alpha(this.dCutoff, dt);
-        this.dxHat = aD * dx + (1 - aD) * this.dxHat;
-
-        const cutoff = this.minCutoff + this.beta * Math.abs(this.dxHat);
-        const aX = this.alpha(cutoff, dt);
-        this.xHat = aX * x + (1 - aX) * this.xHat;
-        return this.xHat;
-      }
-      reset(x) { this.xHat = x; this.dxHat = 0; }
-    }
-
     const socket = io();
     socket.on('connect', () => {
       socket.emit('identify',{ role:'display', deviceId: socket.id });
@@ -84,29 +54,27 @@
       };
     });
 
-    // Settings (Länge hier fix)
-    let smoothing      = 0.0;  // deaktiviert, Filter übernimmt
-    let paddleLength   = 80;   // fest in game
+    // Settings (Schläger-Länge fix lokal)
+    let paddleLength   = 80;   // fest im Display
     let paddleWidth    = 14;
 
     const FRICTION           = 0.995,
           ANGULAR_FRICTION   = 0.95,
-          BOUNCE             = 0.8,    // Wände
-          RESTITUTION_PAD    = 1.45,   // Schläger-Bounce
+          BOUNCE             = 0.8,
+          RESTITUTION_PAD    = 1.45,
           CTRL_NORM_SCALE    = 0.0012,
-          PTR_TTL            = 600;
+          PTR_TTL            = 700;
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    // pro deviceId:
-    // { rawX, rawY, rawA, x, y, a, px, py, t, color, fx, fy, fa }
+    // Paddle-State mit Zielwerten + weicher Interpolation (netzwerkrobust)
+    // pro deviceId: { tx, ty, ta, x, y, a, px, py, t, color }
     const paddles = {};
     const deviceColors = {};
     const FALLBACK_COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIdx = 0;
 
     socket.on('settings', s => {
-      if (typeof s.smoothing === 'number') smoothing = s.smoothing; // nicht genutzt, nur falls du testen willst
       if (typeof s.paddleWidth  === 'number') paddleWidth  = s.paddleWidth;
       // paddleLength bleibt lokal fix
     });
@@ -114,33 +82,20 @@
     socket.on('draw', ({x,y,angleDeg,deviceId,color,isStart})=>{
       if (!canvas.width) return;
       const now  = performance.now();
-      const rawX = x * canvas.width, rawY = y * canvas.height;
-      const rawA = (angleDeg ?? 0) * Math.PI/180;
+      const tx = x * canvas.width;
+      const ty = y * canvas.height;
+      const ta = (angleDeg ?? 0) * Math.PI/180;
 
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
 
       let p = paddles[deviceId];
       if (!p) {
-        p = paddles[deviceId] = {
-          rawX, rawY, rawA,
-          x: rawX, y: rawY, a: rawA,
-          px: rawX, py: rawY,
-          t: now, pt: now,
-          color: deviceColors[deviceId],
-          fx: new OneEuroFilter(1.2, 0.015, 1.0),
-          fy: new OneEuroFilter(1.2, 0.015, 1.0),
-          fa: new OneEuroFilter(1.8, 0.015, 1.0)
-        };
-        p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
+        p = paddles[deviceId] = { tx, ty, ta, x:tx, y:ty, a:ta, px:tx, py:ty, t:now, pt:now, color:deviceColors[deviceId] };
       } else {
-        // nur Ziele aktualisieren; Filterung passiert im Update-Loop mit konstantem dt
-        p.rawX = rawX; p.rawY = rawY; p.rawA = rawA;
-        p.t = now;
-        if (isStart) { // harter Reset bei neuem „Laser drücken“
-          p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
-          p.x = rawX; p.y = rawY; p.a = rawA;
-          p.px = rawX; p.py = rawY;
+        p.tx = tx; p.ty = ty; p.ta = ta; p.t = now;
+        if (isStart) { // harter Reset, wenn Laser neu gedrückt
+          p.x = tx; p.y = ty; p.a = ta; p.px = tx; p.py = ty;
         }
       }
     });
@@ -153,18 +108,35 @@
       }
     }
 
+    function smoothStep(current, target, dt, tau, maxStep){
+      const k = 1 - Math.exp(-dt / tau);           // zeitbasierte Interpolation
+      let next = current + (target - current) * k; // weich zu Ziel
+      // optional: Schrittgröße begrenzen (gegen Sprünge)
+      const step = next - current;
+      const lim = maxStep * dt;
+      if (Math.abs(step) > lim) next = current + Math.sign(step) * lim;
+      return next;
+    }
+
     function update(dt){
       if(!maskCtx) return;
       const now = performance.now();
       cleanup(now);
 
-      // Filtere Paddle-Positionen im Frame-Takt (entkoppelt von Netzwerkwacklern)
+      // Interpolation: füllt Netzwerk-Lücken, verhindert Jitter
       for(const id in paddles){
         const p = paddles[id];
-        p.px = p.x; p.py = p.y; // für Geschwindigkeits-/Impulsberechnung
-        p.x = p.fx.filter(p.rawX, dt);
-        p.y = p.fy.filter(p.rawY, dt);
-        p.a = p.fa.filter(p.rawA, dt);
+        p.px = p.x; p.py = p.y;
+
+        // große Ausreißer beim Target: sanft begrenzen
+        const MAX_TARGET_JUMP = canvas.width * 0.45;
+        if (Math.abs(p.tx - p.x) > MAX_TARGET_JUMP) { p.x = p.tx; p.px = p.x; }
+        if (Math.abs(p.ty - p.y) > MAX_TARGET_JUMP) { p.y = p.ty; p.py = p.y; }
+
+        // Zeitkonstanten (schnell & weich)
+        p.x = smoothStep(p.x, p.tx, dt, 0.06, canvas.width * 2.0);   // tau ~60ms
+        p.y = smoothStep(p.y, p.ty, dt, 0.06, canvas.height * 2.0);
+        p.a = smoothStep(p.a, p.ta, dt, 0.05, Math.PI * 8);
       }
 
       // Paddle-Kollisionen
@@ -189,14 +161,12 @@
           const d = dist || 1;
           nx /= d; ny /= d;
 
-          // Nur reflektieren, wenn Annäherung
           const vDotN = ball.vx*nx + ball.vy*ny;
           if (vDotN < 0) {
             ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx;
             ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny;
           }
 
-          // Zusatzimpuls abhängig von Paddle-Bewegung entlang der Normalen
           const dvx = (p.x - p.px) / dt;
           const dvy = (p.y - p.py) / dt;
           const ctrlN = (dvx*nx + dvy*ny);
@@ -205,12 +175,10 @@
             ball.vy += ny * ctrlN * CTRL_NORM_SCALE;
           }
 
-          // Penetration lösen
           const pen = hitDist - dist + 1.0;
           ball.x += nx * pen;
           ball.y += ny * pen;
 
-          // Drehimpuls (tangentiale Komponente)
           const tx = -ny, ty = nx;
           const tangential = ball.vx*tx + ball.vy*ty;
           ball.angularVelocity += tangential * 0.001;
@@ -222,7 +190,7 @@
       ball.y += ball.vy*dt;
       ball.angle += ball.angularVelocity*dt;
 
-      // Masken-Kollision nach außen drücken
+      // Masken-Kollision
       let correctionX = 0, correctionY = 0, hitCount = 0;
       for(let i=0;i<16;i++){
         const ang = i*(Math.PI*2/16);
@@ -269,7 +237,7 @@
         ctx.clearRect(0,0,canvas.width,canvas.height);
       }
 
-      // Schatten
+      // Ball-Schatten
       ctx.save();
       ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
       ctx.shadowBlur = 15;
