@@ -3,27 +3,41 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.2)</title>
+  <title>Game Display – Paddle-Line (v2.1.1)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
-    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:1; }
+    #version { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
+    #metrics { position:absolute; top:10px; right:10px; z-index:2; font:12px/1.4 monospace; background:#0008; color:#fff; padding:8px 10px; border-radius:8px; max-width:42vw; }
     canvas { display:block; margin:0 auto; background:#000; }
   </style>
 </head>
 <body>
-  <div id="version">v2.2 Game</div>
+  <div id="version">v2.1.1 Game</div>
+  <div id="metrics">—</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
+    // OneEuroFilter wie v2.1 (zur sanften Anzeige)
+    class OneEuroFilter {
+      constructor(minCutoff = 1.0, beta = 0.015, dCutoff = 1.0) {
+        this.minCutoff = minCutoff; this.beta = beta; this.dCutoff = dCutoff;
+        this.xHat = null; this.dxHat = 0;
+      }
+      alpha(fc, dt){ const tau=1/(2*Math.PI*fc); return 1/(1+tau/dt); }
+      filter(x, dt){ if(dt<=0||!isFinite(dt)) dt=1/60; if(this.xHat===null){ this.xHat=x; this.dxHat=0; return x; }
+        const dx=(x-this.xHat)/dt, aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat;
+        const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat), aX=this.alpha(cutoff,dt);
+        this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat; }
+      reset(x){ this.xHat=x; this.dxHat=0; }
+    }
+
     const socket = io();
-    socket.on('connect', () => {
-      socket.emit('identify',{ role:'display', deviceId: socket.id });
-      socket.emit('request-settings');
-    });
+    socket.on('connect', () => { socket.emit('identify',{ role:'display', deviceId: socket.id }); socket.emit('request-settings'); });
 
     const canvas = document.getElementById('gameCanvas');
     const ctx    = canvas.getContext('2d');
+    const metricsBox = document.getElementById('metrics');
 
     // Assets
     let maskCanvas, maskCtx;
@@ -31,7 +45,6 @@
           maskImage  = new Image(),
           ballBase   = new Image(),
           ballShadow = new Image();
-
     bgImage.src    = 'background.png';
     maskImage.src  = 'mask.png';
     ballBase.src   = 'ball-base.png';
@@ -54,8 +67,9 @@
       };
     });
 
-    // Settings (Schläger-Länge fix lokal)
-    let paddleLength   = 80;   // fest im Display
+    // Lokale Anzeige-Settings
+    let smoothing      = 0.0;   // Display glättet mit OneEuro unten (fx/fy/fa)
+    let paddleLength   = 80;    // fester Wert hier
     let paddleWidth    = 14;
 
     const FRICTION           = 0.995,
@@ -63,41 +77,57 @@
           BOUNCE             = 0.8,
           RESTITUTION_PAD    = 1.45,
           CTRL_NORM_SCALE    = 0.0012,
-          PTR_TTL            = 700;
+          PTR_TTL            = 1000;
 
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    // Paddle-State mit Zielwerten + weicher Interpolation (netzwerkrobust)
-    // pro deviceId: { tx, ty, ta, x, y, a, px, py, t, color }
+    // Paddle-State + Filter + Netz-Metriken
+    // pro id: { rawX, rawY, rawA, x,y,a, px,py, t, color, fx,fy,fa, lastSeq, drops, recvCount, lastRecvT, dtJitter }
     const paddles = {};
     const deviceColors = {};
     const FALLBACK_COLORS = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
     let colorIdx = 0;
 
-    socket.on('settings', s => {
-      if (typeof s.paddleWidth  === 'number') paddleWidth  = s.paddleWidth;
-      // paddleLength bleibt lokal fix
-    });
+    socket.on('settings', s => { if(typeof s.paddleWidth==='number') paddleWidth=s.paddleWidth; });
 
-    socket.on('draw', ({x,y,angleDeg,deviceId,color,isStart})=>{
+    socket.on('draw', ({x,y,angleDeg,deviceId,color,isStart,seq})=>{
       if (!canvas.width) return;
       const now  = performance.now();
-      const tx = x * canvas.width;
-      const ty = y * canvas.height;
-      const ta = (angleDeg ?? 0) * Math.PI/180;
+      const rawX = x * canvas.width, rawY = y * canvas.height;
+      const rawA = (angleDeg ?? 0) * Math.PI/180;
 
       if (color) deviceColors[deviceId] = color;
       else if (!deviceColors[deviceId]) deviceColors[deviceId] = FALLBACK_COLORS[colorIdx++ % FALLBACK_COLORS.length];
 
       let p = paddles[deviceId];
       if (!p) {
-        p = paddles[deviceId] = { tx, ty, ta, x:tx, y:ty, a:ta, px:tx, py:ty, t:now, pt:now, color:deviceColors[deviceId] };
+        p = paddles[deviceId] = {
+          rawX, rawY, rawA, x:rawX, y:rawY, a:rawA, px:rawX, py:rawY, t:now,
+          color: deviceColors[deviceId],
+          fx:new OneEuroFilter(1.2,0.015,1.0), fy:new OneEuroFilter(1.2,0.015,1.0), fa:new OneEuroFilter(1.8,0.015,1.0),
+          lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT:now, dtJitter:0
+        };
+        p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA);
       } else {
-        p.tx = tx; p.ty = ty; p.ta = ta; p.t = now;
-        if (isStart) { // harter Reset, wenn Laser neu gedrückt
-          p.x = tx; p.y = ty; p.a = ta; p.px = tx; p.py = ty;
+        // Netzmetriken
+        p.recvCount++;
+        const dt = now - p.lastRecvT; p.lastRecvT = now;
+        const target = 1000/60; // ~16.7ms
+        const j = Math.abs(dt - target);
+        p.dtJitter = p.dtJitter ? (0.9*p.dtJitter + 0.1*j) : j;
+
+        if (typeof seq === 'number') {
+          if (seq > p.lastSeq + 1) p.drops += (seq - p.lastSeq - 1);
+          p.lastSeq = Math.max(p.lastSeq, seq);
         }
+
+        // Daten aktualisieren
+        p.rawX = rawX; p.rawY = rawY; p.rawA = rawA; p.t = now;
+        if (isStart) { p.fx.reset(rawX); p.fy.reset(rawY); p.fa.reset(rawA); p.x=rawX; p.y=rawY; p.a=rawA; p.px=p.x; p.py=p.y; }
       }
+
+      // ACK zurück an Control (für RTT)
+      if (typeof seq === 'number') socket.emit('draw-ack', { deviceId, seq });
     });
 
     socket.on('draw-end', ({deviceId})=> delete paddles[deviceId]);
@@ -108,35 +138,18 @@
       }
     }
 
-    function smoothStep(current, target, dt, tau, maxStep){
-      const k = 1 - Math.exp(-dt / tau);           // zeitbasierte Interpolation
-      let next = current + (target - current) * k; // weich zu Ziel
-      // optional: Schrittgröße begrenzen (gegen Sprünge)
-      const step = next - current;
-      const lim = maxStep * dt;
-      if (Math.abs(step) > lim) next = current + Math.sign(step) * lim;
-      return next;
-    }
-
     function update(dt){
       if(!maskCtx) return;
       const now = performance.now();
       cleanup(now);
 
-      // Interpolation: füllt Netzwerk-Lücken, verhindert Jitter
+      // Filter / Anzeige-Koords
       for(const id in paddles){
         const p = paddles[id];
-        p.px = p.x; p.py = p.y;
-
-        // große Ausreißer beim Target: sanft begrenzen
-        const MAX_TARGET_JUMP = canvas.width * 0.45;
-        if (Math.abs(p.tx - p.x) > MAX_TARGET_JUMP) { p.x = p.tx; p.px = p.x; }
-        if (Math.abs(p.ty - p.y) > MAX_TARGET_JUMP) { p.y = p.ty; p.py = p.y; }
-
-        // Zeitkonstanten (schnell & weich)
-        p.x = smoothStep(p.x, p.tx, dt, 0.06, canvas.width * 2.0);   // tau ~60ms
-        p.y = smoothStep(p.y, p.ty, dt, 0.06, canvas.height * 2.0);
-        p.a = smoothStep(p.a, p.ta, dt, 0.05, Math.PI * 8);
+        p.px=p.x; p.py=p.y;
+        p.x = p.fx.filter(p.rawX, dt);
+        p.y = p.fy.filter(p.rawY, dt);
+        p.a = p.fa.filter(p.rawA, dt);
       }
 
       // Paddle-Kollisionen
@@ -158,37 +171,18 @@
         const hitDist = ball.r + paddleWidth*0.5;
 
         if (dist <= hitDist) {
-          const d = dist || 1;
-          nx /= d; ny /= d;
-
+          const d = dist || 1; nx/=d; ny/=d;
           const vDotN = ball.vx*nx + ball.vy*ny;
-          if (vDotN < 0) {
-            ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx;
-            ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny;
-          }
-
-          const dvx = (p.x - p.px) / dt;
-          const dvy = (p.y - p.py) / dt;
-          const ctrlN = (dvx*nx + dvy*ny);
-          if (ctrlN > 0) {
-            ball.vx += nx * ctrlN * CTRL_NORM_SCALE;
-            ball.vy += ny * ctrlN * CTRL_NORM_SCALE;
-          }
-
-          const pen = hitDist - dist + 1.0;
-          ball.x += nx * pen;
-          ball.y += ny * pen;
-
-          const tx = -ny, ty = nx;
-          const tangential = ball.vx*tx + ball.vy*ty;
-          ball.angularVelocity += tangential * 0.001;
+          if (vDotN < 0) { ball.vx -= (1 + RESTITUTION_PAD) * vDotN * nx; ball.vy -= (1 + RESTITUTION_PAD) * vDotN * ny; }
+          const dvx = (p.x - p.px) / dt, dvy = (p.y - p.py) / dt;
+          const ctrlN = (dvx*nx + dvy*ny); if (ctrlN > 0) { ball.vx += nx * ctrlN * CTRL_NORM_SCALE; ball.vy += ny * ctrlN * CTRL_NORM_SCALE; }
+          const pen = hitDist - dist + 1.0; ball.x += nx * pen; ball.y += ny * pen;
+          const tx = -ny, ty = nx; const tangential = ball.vx*tx + ball.vy*ty; ball.angularVelocity += tangential * 0.001;
         }
       }
 
       // Ballphysik
-      ball.x += ball.vx*dt;
-      ball.y += ball.vy*dt;
-      ball.angle += ball.angularVelocity*dt;
+      ball.x += ball.vx*dt; ball.y += ball.vy*dt; ball.angle += ball.angularVelocity*dt;
 
       // Masken-Kollision
       let correctionX = 0, correctionY = 0, hitCount = 0;
@@ -198,23 +192,14 @@
         const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
         if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
           const d = maskCtx.getImageData(ex,ey,1,1).data;
-          if(d[0]<200 || d[1]<200 || d[2]<200){
-            const nx = Math.cos(ang);
-            const ny = Math.sin(ang);
-            correctionX += nx;
-            correctionY += ny;
-            hitCount++;
-          }
+          if(d[0]<200 || d[1]<200 || d[2]<200){ const nx = Math.cos(ang); const ny = Math.sin(ang); correctionX += nx; correctionY += ny; hitCount++; }
         }
       }
       if (hitCount > 0) {
-        correctionX /= hitCount;
-        correctionY /= hitCount;
+        correctionX/=hitCount; correctionY/=hitCount;
         const vDotN = ball.vx*correctionX + ball.vy*correctionY;
-        ball.vx -= 2*vDotN*correctionX;
-        ball.vy -= 2*vDotN*correctionY;
-        ball.x += correctionX * 2;
-        ball.y += correctionY * 2;
+        ball.vx -= 2*vDotN*correctionX; ball.vy -= 2*vDotN*correctionY;
+        ball.x += correctionX * 2; ball.y += correctionY * 2;
       }
 
       // Canvas-Grenzen
@@ -223,69 +208,59 @@
       if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
       if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
 
-      ball.vx *= FRICTION;
-      ball.vy *= FRICTION;
-      ball.angularVelocity *= ANGULAR_FRICTION;
+      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
+
+      // Netz-Metriken rendern
+      const lines = [];
+      for(const id in paddles){
+        const p = paddles[id];
+        // grobe Empfangsrate (letzte Sekunde): recvCount wird jeden ~1s reset
+        lines.push(`${id.slice(0,6)} | fps≈${p.recvFps ?? '…'} | jitter≈${p.dtJitter?.toFixed(1) ?? '…'}ms | drops=${p.drops}`);
+      }
+      metricsBox.textContent = lines.length ? lines.join('\n') : 'Warten auf Controller…';
     }
+
+    // Sekundentakt für fps-Schätzung und Counters
+    setInterval(() => {
+      for(const id in paddles){
+        const p = paddles[id];
+        const fps = p.recvCount; // ca. pro Sekunde
+        p.recvFps = fps;
+        p.recvCount = 0;
+      }
+    }, 1000);
 
     function draw(){
       if(bgImage.complete){
-        const bx=(canvas.width-bgImage.width)/2;
-        const by=(canvas.height-bgImage.height)/2;
+        const bx=(canvas.width-bgImage.width)/2, by=(canvas.height-bgImage.height)/2;
         ctx.drawImage(bgImage,bx,by);
-      } else {
-        ctx.clearRect(0,0,canvas.width,canvas.height);
-      }
+      } else { ctx.clearRect(0,0,canvas.width,canvas.height); }
 
       // Ball-Schatten
-      ctx.save();
-      ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
-      ctx.shadowBlur = 15;
-      ctx.shadowOffsetX = -15;
-      ctx.shadowOffsetY = 15;
-      ctx.beginPath();
-      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0,0,0,1)';
-      ctx.fill();
-      ctx.restore();
+      ctx.save(); ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=15; ctx.shadowOffsetX=-15; ctx.shadowOffsetY=15;
+      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fillStyle='rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
 
       // Ball
-      if(ballBase.complete){
-        ctx.save();
-        ctx.translate(ball.x,ball.y);
-        ctx.rotate(ball.angle);
-        ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
-        ctx.restore();
-      }
-      if(ballShadow.complete){
-        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
-      }
+      if(ballBase.complete){ ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle); ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore(); }
+      if(ballShadow.complete){ ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2); }
 
       // Paddles
       for(const id in paddles){
         const p = paddles[id];
-        ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.a);
+        ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.a);
         ctx.fillStyle = p.color || '#fff';
         ctx.beginPath();
-        const L = paddleLength, W = paddleWidth, r = W/2;
-        ctx.moveTo(-L/2, -r);
-        ctx.lineTo( L/2, -r);
-        ctx.arc( L/2, 0, r, -Math.PI/2,  Math.PI/2);
-        ctx.lineTo(-L/2, r);
-        ctx.arc(-L/2, 0, r,  Math.PI/2, -Math.PI/2);
-        ctx.closePath();
-        ctx.fill();
+        const L=paddleLength, W=paddleWidth, r=W/2;
+        ctx.moveTo(-L/2,-r); ctx.lineTo(L/2,-r); ctx.arc(L/2,0,r,-Math.PI/2,Math.PI/2);
+        ctx.lineTo(-L/2,r);  ctx.arc(-L/2,0,r,Math.PI/2,-Math.PI/2); ctx.closePath(); ctx.fill();
         ctx.restore();
       }
     }
 
     let last=performance.now();
     (function loop(now){
-      const dt=(now-last)/1000; last=now; // Sekunden
-      update(dt);
-      draw();
+      const dt=(now-last)/1000; last=now;
+      update(dt); draw();
       requestAnimationFrame(loop);
     })(last);
   </script>
