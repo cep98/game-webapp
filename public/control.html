@@ -14,48 +14,38 @@
     #version {
       position:absolute; top:10px; right:10px; opacity:0.7; font-size:0.9em;
     }
-    /* Buttons ohne Text (nur Form/Farbe) */
     .btn {
       border:4px solid transparent; border-radius:12px;
       background:#444;
       width:110px; height:110px;
       margin:10px;
     }
-    #gyroBtn {
-      border-radius:16px; /* eckiger */
-    }
-    #laserBtn {
-      border-radius:50%; /* rund */
-      background:#cc0000;
-      display:none;
-    }
+    #gyroBtn { border-radius:16px; }
+    #laserBtn { border-radius:50%; background:#cc0000; display:none; }
   </style>
 </head>
 <body>
-  <div id="version">v2.0 Control</div>
-  <!-- Buttons bewusst ohne Text. Nur aria-labels. -->
+  <div id="version">v2.0.1 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    const socket    = io();
-    const gyroBtn   = document.getElementById('gyroBtn');
-    const laserBtn  = document.getElementById('laserBtn');
+    const socket   = io();
+    const gyroBtn  = document.getElementById('gyroBtn');
+    const laserBtn = document.getElementById('laserBtn');
 
-    let myColor     = null;
-    let drawing     = false;
-    let sentStart   = false;
+    let myColor   = null;
+    let drawing   = false;
+    let sentStart = false;
 
-    // Letzte Sensorwerte + Nullpunkte (Kalibrierung beim ersten Druck)
     let lastAlpha = 0, lastBeta = 0, lastGamma = 0;
     let zeroA = 0, zeroB = 0, zeroG = 0;
 
-    // Von Admin gesteuerte Parameter (live)
     let maxHor = 20, maxVer = 20;
 
     socket.on('connect', () => {
-      socket.emit('identify',      { role:'control', deviceId: socket.id });
+      socket.emit('identify', { role:'control', deviceId: socket.id });
       socket.emit('request-settings');
     });
 
@@ -68,31 +58,25 @@
     socket.on('settings', s => {
       if (typeof s.maxHor === 'number') maxHor = s.maxHor;
       if (typeof s.maxVer === 'number') maxVer = s.maxVer;
-      // (Glättung/Schläger-Werte betreffen Display, nicht nötig hier)
     });
 
-    // Gyro-Permission Button (ohne Text)
     gyroBtn.addEventListener('click', async () => {
       try {
         if (DeviceOrientationEvent?.requestPermission) {
           const perm = await DeviceOrientationEvent.requestPermission();
           if (perm !== 'granted') return alert('Gyroskop-Zugriff benötigt!');
         }
-        if (myColor) {
-          gyroBtn.style.display  = 'none';
-          laserBtn.style.display = 'block';
-        }
+        gyroBtn.style.display  = 'none';
+        laserBtn.style.display = 'block';
       } catch (e) {
         alert('Gyro nicht verfügbar.');
       }
     });
 
-    // Laser halten = Senden starten + Kalibrierung
     laserBtn.addEventListener('touchstart', e => {
       e.preventDefault();
       drawing = true;
       sentStart = false;
-      // Nullpunkte setzen
       zeroA = lastAlpha; zeroB = lastBeta; zeroG = lastGamma;
     }, { passive:false });
 
@@ -103,5 +87,33 @@
     }, { passive:false });
 
     window.addEventListener('deviceorientation', ev => {
-      // iOS liefert alpha/beta/gamma in Grad
-      lastAlpha
+      lastAlpha = ev.alpha ?? 0;
+      lastBeta  = ev.beta  ?? 0;
+      lastGamma = ev.gamma ?? 0;
+      if (!drawing) return;
+
+      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
+      let dB = lastBeta  - zeroB;
+      let dG = lastGamma - zeroG;
+
+      dA = Math.max(-maxHor, Math.min(maxHor, dA));
+      dB = Math.max(-maxVer, Math.min(maxVer, dB));
+      const x = 1 - ((dA + maxHor) / (2 * maxHor));
+      const y = 1 - ((dB + maxVer) / (2 * maxVer));
+
+      if (dG > 90) dG = 90;
+      if (dG < -90) dG = -90;
+
+      const payload = {
+        x, y,
+        angleDeg: dG,
+        deviceId: socket.id,
+        color: myColor,
+        isStart: !sentStart
+      };
+      socket.emit('draw', payload);
+      sentStart = true;
+    });
+  </script>
+</body>
+</html>
