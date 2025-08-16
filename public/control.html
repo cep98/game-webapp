@@ -19,7 +19,6 @@
     #gyroBtn { border-radius:16px; }
     #laserBtn { border-radius:50%; background:#cc0000; display:none; }
     #net { position:fixed; bottom:8px; left:8px; font:12px/1.2 monospace; opacity:.85; background:#0008; padding:6px 8px; border-radius:8px; }
-    /* Lag-Panel */
     #lagPanel {
       position: fixed; right: 8px; bottom: 8px; left: 8px; max-height: 45vh; overflow:auto;
       background:#000a; border:1px solid #444; border-radius:10px; padding:8px;
@@ -38,13 +37,12 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.1.2 Control</div>
+  <div id="version">v2.1.3 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
 
   <div id="net">RTT: – ms | send FPS: –</div>
 
-  <!-- Lag-Panel (RTT/FPS vom Controller) -->
   <div id="lagPanel">
     <h3>Controller-Netzwerk (RTT & Sende-Rate)
       <span style="flex:1"></span>
@@ -58,7 +56,6 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // === OneEuroFilter (wie v2.1) ===
     class OneEuroFilter {
       constructor(minCutoff=1.2, beta=0.03, dCutoff=1.0) { this.minCutoff=minCutoff; this.beta=beta; this.dCutoff=dCutoff; this.xHat=null; this.dxHat=0; }
       alpha(fc, dt){ const tau = 1/(2*Math.PI*fc); return 1/(1+tau/dt); }
@@ -69,59 +66,33 @@
       reset(x){ this.xHat=x; this.dxHat=0; }
     }
 
-    const socket   = io();
+    // >>> WebSocket only (keine Upgrades/Long-Polling)
+    const socket = io({ transports: ['websocket'], upgrade: false });
+
     const gyroBtn  = document.getElementById('gyroBtn');
     const laserBtn = document.getElementById('laserBtn');
     const netBox   = document.getElementById('net');
+    const tbody    = document.querySelector('#lagTable tbody');
+    document.getElementById('clearLag').onclick = () => { tbody.innerHTML=''; };
 
-    // Lag table helpers
-    const tbody = document.querySelector('#lagTable tbody');
-    const clearLagBtn = document.getElementById('clearLag');
-    clearLagBtn.onclick = () => { tbody.innerHTML=''; };
+    function nowClock(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`; }
+    function addLagRow(metric,val,note,sev='warn'){ const tr=document.createElement('tr'); tr.innerHTML=`<td>${nowClock()}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`; tbody.prepend(tr); while(tbody.children.length>80) tbody.removeChild(tbody.lastChild); }
 
-    function nowClock() {
-      const d=new Date(); const p=n=>String(n).padStart(2,'0');
-      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-    }
-    function addLagRow(metric, val, note, severity='warn'){
-      const tr=document.createElement('tr');
-      tr.innerHTML = `<td>${nowClock()}</td><td>${metric}</td><td class="${severity}">${val}</td><td>${note||''}</td>`;
-      tbody.prepend(tr);
-      // Trimmen
-      while (tbody.children.length > 80) tbody.removeChild(tbody.lastChild);
-    }
-
-    let myColor   = null;
-    let drawing   = false;
-    let sentStart = false;
-
+    let myColor=null, drawing=false, sentStart=false;
     let lastAlpha=0, lastBeta=0, lastGamma=0;
     let zeroA=0, zeroB=0, zeroG=0;
-
-    const fA = new OneEuroFilter(1.2, 0.03, 1.0);
-    const fB = new OneEuroFilter(1.2, 0.03, 1.0);
-    const fG = new OneEuroFilter(1.8, 0.03, 1.0);
-
+    const fA=new OneEuroFilter(1.2,0.03,1.0), fB=new OneEuroFilter(1.2,0.03,1.0), fG=new OneEuroFilter(1.8,0.03,1.0);
     let maxHor=20, maxVer=20;
 
-    // --- Lag-Diagnose: Sequenzen & RTT ---
-    let seq = 0;
-    const sendTimes = new Map(); // seq -> tSend
-    let rttMs = NaN;
-    let fpsAvg = 0; let lastLoopT = performance.now();
+    // Lag-Stats
+    let seq=0; const sendTimes=new Map();
+    let rttMs=NaN;
+    let sendsThisSec=0, sendFps=0;
 
-    // Thresholds (Control-Seite)
-    const RTT_WARN = 80;   // ms
-    const RTT_BAD  = 140;  // ms
-    const SEND_FPS_MIN_WARN = 45; // /s
-    const SEND_FPS_MIN_BAD  = 30; // /s
+    const RTT_WARN=80, RTT_BAD=140;
 
-    socket.on('connect', () => {
-      socket.emit('identify', { role:'control', deviceId: socket.id });
-      socket.emit('request-settings');
-    });
-
-    socket.on('assign-color', color => { myColor=color; laserBtn.style.borderColor=color; gyroBtn.style.borderColor=color; });
+    socket.on('connect', () => { socket.emit('identify', { role:'control', deviceId: socket.id }); socket.emit('request-settings'); });
+    socket.on('assign-color', c => { myColor=c; laserBtn.style.borderColor=c; gyroBtn.style.borderColor=c; });
     socket.on('settings', s => { if(typeof s.maxHor==='number') maxHor=s.maxHor; if(typeof s.maxVer==='number') maxVer=s.maxVer; });
 
     socket.on('draw-ack', ({ seq:ackSeq }) => {
@@ -130,7 +101,6 @@
         const rtt = performance.now() - t0;
         rttMs = isNaN(rttMs) ? rtt : (0.85*rttMs + 0.15*rtt);
         sendTimes.delete(ackSeq);
-        // Log spikes
         if (rtt > RTT_BAD) addLagRow('RTT', `${Math.round(rtt)} ms`, 'starker Spike', 'bad');
         else if (rtt > RTT_WARN) addLagRow('RTT', `${Math.round(rtt)} ms`, 'hoch', 'warn');
       }
@@ -176,20 +146,20 @@
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
-    // Minütlicher Check auf niedrige Sende-Rate
-    setInterval(() => {
-      if (fpsAvg && fpsAvg < SEND_FPS_MIN_BAD) addLagRow('send FPS', fpsAvg.toFixed(0), 'sehr niedrig', 'bad');
-      else if (fpsAvg && fpsAvg < SEND_FPS_MIN_WARN) addLagRow('send FPS', fpsAvg.toFixed(0), 'niedrig', 'warn');
-    }, 1000);
+    // >>> 30 FPS Sendetakt + Volatile (Drop statt Puffer)
+    let lastSendT = performance.now();
+    const SEND_INTERVAL_MS = 1000/30;
 
-    function loop(t){
-      const dt = Math.max(1/120, Math.min(1/20, (t - lastLoopT)/1000));
-      lastLoopT = t;
-      // FPS (EWMA)
-      const instFps = 1/dt;
-      fpsAvg = fpsAvg ? (0.9*fpsAvg + 0.1*instFps) : instFps;
+    // send FPS Zähler
+    setInterval(() => { sendFps = sendsThisSec; sendsThisSec = 0; }, 1000);
 
-      if (drawing) {
+    function loop(){
+      const now = performance.now();
+
+      if (drawing && (now - lastSendT) >= SEND_INTERVAL_MS) {
+        const dt = (now - lastSendT) / 1000; // dt nur für den Filter genutzt
+        lastSendT = now;
+
         const aF = fA.filter(lastAlpha, dt);
         const bF = fB.filter(lastBeta,  dt);
         let   gF = fG.filter(lastGamma, dt);
@@ -206,17 +176,19 @@
         const y = 1 - ((dB + maxVer) / (2 * maxVer));
 
         if (isFinite(x) && isFinite(y)) {
-          const payload = {
-            x, y, angleDeg: dG, deviceId: socket.id, color: myColor, isStart: !sentStart,
-            seq: ++seq
-          };
-          sendTimes.set(seq, performance.now());
-          socket.emit('draw', payload);
+          const idSeq = ++seq;
+          sendTimes.set(idSeq, now);
+          sendsThisSec++;
+
+          // WICHTIG: keine Kompression + volatile → kein Stau, alte Frames werden gedroppt
+          socket.compress(false).volatile.emit('draw', {
+            x, y, angleDeg: dG, deviceId: socket.id, color: myColor, isStart: !sentStart, seq: idSeq
+          });
           sentStart = true;
         }
       }
 
-      netBox.textContent = `RTT: ${isNaN(rttMs)?'–':Math.round(rttMs)} ms | send FPS: ${fpsAvg?fpsAvg.toFixed(0):'–'}`;
+      netBox.textContent = `RTT: ${isNaN(rttMs)?'–':Math.round(rttMs)} ms | send FPS: ${sendFps || '–'}`;
       requestAnimationFrame(loop);
     }
     requestAnimationFrame(loop);
