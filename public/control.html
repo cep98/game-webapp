@@ -19,16 +19,42 @@
     #gyroBtn { border-radius:16px; }
     #laserBtn { border-radius:50%; background:#cc0000; display:none; }
     #net { position:fixed; bottom:8px; left:8px; font:12px/1.2 monospace; opacity:.85; background:#0008; padding:6px 8px; border-radius:8px; }
+    /* Lag-Panel */
+    #lagPanel {
+      position: fixed; right: 8px; bottom: 8px; left: 8px; max-height: 45vh; overflow:auto;
+      background:#000a; border:1px solid #444; border-radius:10px; padding:8px;
+      font:12px/1.35 monospace;
+    }
+    #lagPanel h3 { margin:0 0 6px 0; font:600 12px/1.2 system-ui, sans-serif; display:flex; align-items:center; gap:8px; }
+    #lagPanel button { background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:2px 8px; cursor:pointer; }
+    #lagTable { width:100%; border-collapse:collapse; }
+    #lagTable th, #lagTable td { border-bottom:1px solid #333; padding:4px 6px; text-align:left; }
+    #lagTable th { position: sticky; top: 0; background:#111; }
+    .warn { color:#ffcc66; }
+    .bad  { color:#ff6666; }
     @media (orientation: landscape) {
       body::after { content:"Bitte im Hochformat nutzen (Rotation gesperrt)."; position:fixed; bottom:12px; left:0; right:0; text-align:center; font-size:12px; opacity:.6; }
     }
   </style>
 </head>
 <body>
-  <div id="version">v2.1.1 Control</div>
+  <div id="version">v2.1.2 Control</div>
   <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
   <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
+
   <div id="net">RTT: – ms | send FPS: –</div>
+
+  <!-- Lag-Panel (RTT/FPS vom Controller) -->
+  <div id="lagPanel">
+    <h3>Controller-Netzwerk (RTT & Sende-Rate)
+      <span style="flex:1"></span>
+      <button id="clearLag">Leeren</button>
+    </h3>
+    <table id="lagTable">
+      <thead><tr><th>Zeit</th><th>Metric</th><th>Wert</th><th>Hinweis</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
@@ -48,6 +74,23 @@
     const laserBtn = document.getElementById('laserBtn');
     const netBox   = document.getElementById('net');
 
+    // Lag table helpers
+    const tbody = document.querySelector('#lagTable tbody');
+    const clearLagBtn = document.getElementById('clearLag');
+    clearLagBtn.onclick = () => { tbody.innerHTML=''; };
+
+    function nowClock() {
+      const d=new Date(); const p=n=>String(n).padStart(2,'0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+    }
+    function addLagRow(metric, val, note, severity='warn'){
+      const tr=document.createElement('tr');
+      tr.innerHTML = `<td>${nowClock()}</td><td>${metric}</td><td class="${severity}">${val}</td><td>${note||''}</td>`;
+      tbody.prepend(tr);
+      // Trimmen
+      while (tbody.children.length > 80) tbody.removeChild(tbody.lastChild);
+    }
+
     let myColor   = null;
     let drawing   = false;
     let sentStart = false;
@@ -55,7 +98,6 @@
     let lastAlpha=0, lastBeta=0, lastGamma=0;
     let zeroA=0, zeroB=0, zeroG=0;
 
-    // Filter wie v2.1
     const fA = new OneEuroFilter(1.2, 0.03, 1.0);
     const fB = new OneEuroFilter(1.2, 0.03, 1.0);
     const fG = new OneEuroFilter(1.8, 0.03, 1.0);
@@ -67,6 +109,12 @@
     const sendTimes = new Map(); // seq -> tSend
     let rttMs = NaN;
     let fpsAvg = 0; let lastLoopT = performance.now();
+
+    // Thresholds (Control-Seite)
+    const RTT_WARN = 80;   // ms
+    const RTT_BAD  = 140;  // ms
+    const SEND_FPS_MIN_WARN = 45; // /s
+    const SEND_FPS_MIN_BAD  = 30; // /s
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'control', deviceId: socket.id });
@@ -80,9 +128,11 @@
       const t0 = sendTimes.get(ackSeq);
       if (t0 !== undefined) {
         const rtt = performance.now() - t0;
-        // EWMA
         rttMs = isNaN(rttMs) ? rtt : (0.85*rttMs + 0.15*rtt);
         sendTimes.delete(ackSeq);
+        // Log spikes
+        if (rtt > RTT_BAD) addLagRow('RTT', `${Math.round(rtt)} ms`, 'starker Spike', 'bad');
+        else if (rtt > RTT_WARN) addLagRow('RTT', `${Math.round(rtt)} ms`, 'hoch', 'warn');
       }
     });
 
@@ -126,6 +176,12 @@
       socket.emit('draw-end', { deviceId: socket.id });
     }, { passive:false });
 
+    // Minütlicher Check auf niedrige Sende-Rate
+    setInterval(() => {
+      if (fpsAvg && fpsAvg < SEND_FPS_MIN_BAD) addLagRow('send FPS', fpsAvg.toFixed(0), 'sehr niedrig', 'bad');
+      else if (fpsAvg && fpsAvg < SEND_FPS_MIN_WARN) addLagRow('send FPS', fpsAvg.toFixed(0), 'niedrig', 'warn');
+    }, 1000);
+
     function loop(t){
       const dt = Math.max(1/120, Math.min(1/20, (t - lastLoopT)/1000));
       lastLoopT = t;
@@ -160,7 +216,6 @@
         }
       }
 
-      // Netzbox
       netBox.textContent = `RTT: ${isNaN(rttMs)?'–':Math.round(rttMs)} ms | send FPS: ${fpsAvg?fpsAvg.toFixed(0):'–'}`;
       requestAnimationFrame(loop);
     }
