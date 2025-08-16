@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.2.2)</title>
+  <title>Game Display – Paddle-Line (v2.2.3)</title>
   <style>
     html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
     #version  { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
@@ -20,7 +20,7 @@
   </style>
 </head>
 <body>
-  <div id="version">v2.2.2 Game</div>
+  <div id="version">v2.2.3 Game</div>
   <div id="metrics">—</div>
   <div id="lagPanel">
     <h3>Übertragungs-Lag (pro Controller)
@@ -36,7 +36,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // WebSocket (Polling bleibt serverseitig erlaubt, hier bevorzugt WebSocket)
+    // WebSocket bevorzugt (Server erlaubt Polling zusätzlich)
     const socket = io({ transports:['websocket'], upgrade:false });
     socket.on('connect', () => { socket.emit('identify',{ role:'display', deviceId: socket.id }); socket.emit('request-settings'); });
 
@@ -84,23 +84,21 @@
     });
 
     // Settings
-    let paddleLength = 80;   // kürzer, präziser
+    let paddleLength = 80;   // 1/3 des ursprünglichen
     let paddleWidth  = 14;
 
-    // Physik-Parameter
-    const FRICTION=0.995, ANGULAR_FRICTION=0.96;
-    const WALL_E = 0.95;                 // Elastizität an der Maske (weiß)
-    const EDGE_E = 0.85;                 // Elastizität an Canvas-Rand
-    const RESTITUTION_PAD = 1.20;        // Rückprallfaktor Schläger vs. Ball (relativ!)
+    // Physik-Parameter (reduzierte Elastizitäten)
+    const FRICTION=0.994, ANGULAR_FRICTION=0.96;
+    const WALL_E = 0.6;                  // Elastizität an der Maske (weiß)
+    const EDGE_E = 0.6;                  // Elastizität an Canvas-Rand
+    const RESTITUTION_PAD = 0.65;        // Rückprallfaktor Schläger vs. Ball (relativ)
     const PTR_TTL=1000;
+    const MIN_BOUNCE_VN = 25;            // kleine Normalgeschw. -> kein Bounce
 
-    // --- EMA + Segment-Interpolation (knackiger) ---
-    // Höheres K -> folgt schneller; kürzere Segmente -> weniger „Schwamm“
-    const K_POS = 0.60;  // Position
-    const K_ANG = 0.40;  // Winkel
-    const SEG_DUR_MIN = 10;     // ms
-    const SEG_DUR_MAX = 60;     // ms
-    const CLAMP_VEL   = 4000;   // px/s
+    // EMA + kurze Interpolationssegmente (präziser)
+    const K_POS = 0.60, K_ANG = 0.40;
+    const SEG_DUR_MIN = 10, SEG_DUR_MAX = 60;
+    const CLAMP_VEL   = 4000;
 
     // Helpers
     function angLerp(a, b, t){
@@ -110,6 +108,12 @@
       return a + d * t;
     }
     const smoothstep = t => (t<=0?0:(t>=1?1:t*t*(3-2*t)));
+
+    function sampleIsWall(x,y){
+      if(x<0||y<0||x>=maskCanvas.width||y>=maskCanvas.height) return true;
+      const d = maskCtx.getImageData(x|0, y|0, 1, 1).data;
+      return (d[0]>240 && d[1]>240 && d[2]>240); // WEISS = Wand
+    }
 
     // Paddles + Farben
     const paddles = {}; // key -> paddle state
@@ -160,15 +164,11 @@
 
       if (!p) {
         p = paddles[key] = {
-          // EMA-Ziele
           emaX: rawX, emaY: rawY, emaA: rawA,
-          // Anzeige (interpoliert)
           x: rawX, y: rawY, a: rawA,
-          // Segmente
           sx: rawX, sy: rawY, sa: rawA,
           ex: rawX, ey: rawY, ea: rawA,
-          st: 0, sd: 33, // t und Dauer in ms
-          // Metriken
+          st: 0, sd: 33,
           color: deviceColors[key],
           lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT: nowRecv, dtJitter:0, recvFps:0, expectedFps:30, lastSuggestT:0
         };
@@ -185,27 +185,23 @@
           p.lastSeq = Math.max(p.lastSeq, seq);
         }
 
-        // --- Konstante EMA (schnelleres Folgen) ---
+        // EMA (schnelleres Folgen)
         p.emaX += (rawX - p.emaX) * K_POS;
         p.emaY += (rawY - p.emaY) * K_POS;
         p.emaA  = angLerp(p.emaA, rawA, K_ANG);
 
-        // Start-Flag: harte Sync
         if (flags & 1) {
-          p.x = p.emaX = rawX;
-          p.y = p.emaY = rawY;
-          p.a = p.emaA = rawA;
+          p.x = p.emaX = rawX; p.y = p.emaY = rawY; p.a = p.emaA = rawA;
         }
 
-        // --- neues Interpolations-Segment (anti-Gap, mit Catch-up) ---
-        p.sx = p.x;     p.sy = p.y;     p.sa = p.a;
-        p.ex = p.emaX;  p.ey = p.emaY;  p.ea = p.emaA;
+        // neues Interpolations-Segment
+        p.sx = p.x; p.sy = p.y; p.sa = p.a;
+        p.ex = p.emaX; p.ey = p.emaY; p.ea = p.emaA;
         p.st = 0;
-        const ideal = 1000 / Math.max(15, p.expectedFps);     // z.B. ~33ms
-        let dur = Math.min(ideal, dt * 0.7);                  // schneller als Gap → holt auf
+        const ideal = 1000 / Math.max(15, p.expectedFps);
+        let dur = Math.min(ideal, dt * 0.7);
         if (!isFinite(dur) || dur <= 0) dur = ideal;
-        dur = Math.max(SEG_DUR_MIN, Math.min(SEG_DUR_MAX, dur));
-        p.sd = dur;
+        p.sd = Math.max(SEG_DUR_MIN, Math.min(SEG_DUR_MAX, dur));
 
         // Cap implizite Geschwindigkeit
         const vx = (p.ex - p.sx) / (p.sd/1000);
@@ -258,12 +254,61 @@
 
     function cleanup(now){ for(const k in paddles){ if(now - paddles[k].lastRecvT > PTR_TTL) delete paddles[k]; } }
 
+    // --- robuste Maskenkollision ---
+    function resolveMaskCollisions(){
+      // 1) Normal über Kreisprobe sammeln
+      let nxSum = 0, nySum = 0, hitCount = 0;
+      const SAMPLES = 32;
+      for(let i=0;i<SAMPLES;i++){
+        const ang = i*(Math.PI*2/SAMPLES);
+        const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
+        const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
+        if(sampleIsWall(ex,ey)){
+          nxSum += Math.cos(ang);
+          nySum += Math.sin(ang);
+          hitCount++;
+        }
+      }
+      if (hitCount === 0) return false;
+
+      // 2) Normale mitteln
+      let nx = nxSum / hitCount, ny = nySum / hitCount;
+      const nd = Math.hypot(nx, ny) || 1; nx/=nd; ny/=nd;
+
+      // 3) Iterativ herauslösen (gegen „Hineinschieben“)
+      // Schrittweite wächst exponentiell, max. 12 Iterationen
+      let step = 1.5; let iter = 0;
+      while (iter++ < 12) {
+        if (!sampleIsWall(Math.round(ball.x + nx*ball.r), Math.round(ball.y + ny*ball.r))) break;
+        ball.x += nx * step;
+        ball.y += ny * step;
+        step *= 1.6;
+      }
+
+      // 4) Rückprall (gedämpft) – nur wenn Annäherung und genügend Energie
+      const vDotN = ball.vx*nx + ball.vy*ny;
+      if (vDotN < -MIN_BOUNCE_VN) {
+        ball.vx -= (1 + WALL_E) * vDotN * nx;
+        ball.vy -= (1 + WALL_E) * vDotN * ny;
+      } else {
+        // kleine normal-Komponente killen (kein Zittern)
+        ball.vx -= vDotN * nx;
+        ball.vy -= vDotN * ny;
+      }
+
+      // leicht aus der Wand schieben
+      ball.x += nx * 1.5;
+      ball.y += ny * 1.5;
+
+      return true;
+    }
+
     function update(dt){
       if(!maskCtx) return;
       const now = performance.now();
       cleanup(now);
 
-      // --- Interpolation ---
+      // Interpolation der Schläger
       for(const k in paddles){
         const p = paddles[k];
         p.st += dt*1000;
@@ -273,7 +318,7 @@
         p.a = angLerp(p.sa, p.ea, s);
       }
 
-      // --- Kollisionen mit Schlägern (RELATIVE VELOCITY!) ---
+      // Kollisionen Schläger (rel. Geschwindigkeit, gedämpfter Bounce)
       for(const k in paddles){
         const p = paddles[k];
         const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
@@ -294,71 +339,43 @@
         if (dist <= hitDist) {
           const d = dist || 1; nx/=d; ny/=d;
 
-          // Penetration minimal lösen
+          // minimal aus dem Schläger heraus
           const pen = hitDist - dist + 0.5;
-          ball.x += nx * pen;
-          ball.y += ny * pen;
+          ball.x += nx * pen; ball.y += ny * pen;
 
-          // Relative Normalgeschwindigkeit (Ball vs. Paddlespitze)
-          const dtSafe = Math.max(1/120, dt || 0);
-          const pvx = (p.ex - p.sx) / (p.sd/1000 || dtSafe); // angenäherte Paddle-Geschwindigkeit über Segment
-          const pvy = (p.ey - p.sy) / (p.sd/1000 || dtSafe);
+          // relative Normalgeschwindigkeit
+          const pvx = (p.ex - p.sx) / (p.sd/1000 || 1/60);
+          const pvy = (p.ey - p.sy) / (p.sd/1000 || 1/60);
           const vRelN = (ball.vx - pvx) * nx + (ball.vy - pvy) * ny;
 
-          // Rückprall entlang der Normalen (nur wenn Annäherung)
-          if (vRelN < 0) {
+          if (vRelN < -MIN_BOUNCE_VN) {
             const jn = -(1 + RESTITUTION_PAD) * vRelN;
-            ball.vx += jn * nx;
-            ball.vy += jn * ny;
+            ball.vx += jn * nx; ball.vy += jn * ny;
+          } else {
+            ball.vx -= vRelN * nx; ball.vy -= vRelN * ny; // kleben verhindern
           }
 
-          // Tangentiale Reibung + Spin
+          // tangentiale Reibung + Spin
           const tx = -ny, ty = nx;
           const vRelT = (ball.vx - pvx) * tx + (ball.vy - pvy) * ty;
-          const fr = 0.015;
+          const fr = 0.012;
           ball.vx -= vRelT * fr * tx;
           ball.vy -= vRelT * fr * ty;
           ball.angularVelocity += vRelT * 0.002;
         }
       }
 
-      // Ballphysik
+      // Integration
       ball.x += ball.vx*dt; ball.y += ball.vy*dt; ball.angle += ball.angularVelocity*dt;
 
-      // --- Maske: WEISS ist Wand (vorher dunkel) ---
-      // robustere Reflexion mit Elastizität WALL_E
-      let nxSum = 0, nySum = 0, hitCount = 0;
-      for(let i=0;i<20;i++){
-        const ang = i*(Math.PI*2/20);
-        const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
-        const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
-        if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
-          const d = maskCtx.getImageData(ex,ey,1,1).data;
-          // Weiß = Wand
-          if(d[0]>240 && d[1]>240 && d[2]>240){
-            nxSum += Math.cos(ang);
-            nySum += Math.sin(ang);
-            hitCount++;
-          }
-        }
-      }
-      if (hitCount > 0) {
-        let nx = nxSum / hitCount, ny = nySum / hitCount;
-        const nd = Math.hypot(nx, ny) || 1; nx/=nd; ny/=nd;
-        const vDotN = ball.vx*nx + ball.vy*ny;
-        // Reflexion mit Elastizität
-        ball.vx -= (1 + WALL_E) * vDotN * nx;
-        ball.vy -= (1 + WALL_E) * vDotN * ny;
-        // sanft aus der Wand schieben
-        ball.x += nx * 3;
-        ball.y += ny * 3;
-      }
+      // Maske: robust lösen
+      resolveMaskCollisions();
 
-      // Canvas-Grenzen
-      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-EDGE_E; ball.angularVelocity*=-1; }
-      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-EDGE_E; ball.angularVelocity*=-1; }
-      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-EDGE_E; ball.angularVelocity*=-1; }
-      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-EDGE_E; ball.angularVelocity*=-1; }
+      // Canvas-Grenzen (gedämpft)
+      if(ball.x-ball.r<0){ ball.x=ball.r; const v=ball.vx; if (v< -MIN_BOUNCE_VN) ball.vx*=-EDGE_E; else ball.vx=0; ball.angularVelocity*=-1; }
+      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; const v=ball.vx; if (v> MIN_BOUNCE_VN) ball.vx*=-EDGE_E; else ball.vx=0; ball.angularVelocity*=-1; }
+      if(ball.y-ball.r<0){ ball.y=ball.r; const v=ball.vy; if (v< -MIN_BOUNCE_VN) ball.vy*=-EDGE_E; else ball.vy=0; ball.angularVelocity*=-1; }
+      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; const v=ball.vy; if (v> MIN_BOUNCE_VN) ball.vy*=-EDGE_E; else ball.vy=0; ball.angularVelocity*=-1; }
 
       // Dämpfung
       ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
@@ -384,7 +401,7 @@
       if(ballBase.complete){ ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle); ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore(); }
       if(ballShadow.complete){ ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2); }
 
-      // Paddles (rounded rectangle)
+      // Paddles
       for(const k in paddles){
         const p = paddles[k];
         ctx.save();
