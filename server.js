@@ -1,52 +1,42 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
+const http    = require('http');
+const socket  = require('socket.io');
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
+const app  = express();
+const serv = http.createServer(app);
+const io   = socket(serv);
 
 app.use(express.static('public'));
 
 io.on('connection', socket => {
-  console.log('Neue Verbindung:', socket.id);
+  let role = null;
 
   socket.on('identify', data => {
-    socket.role = data.role;
-    socket.deviceId = data.deviceId;
-
-    if (socket.role === 'control') {
-      // Farbe zufällig zuweisen und an Control schicken
-      const color = getRandomColor();
-      socket.emit('assign-color', color);
+    role = data.role;
+    if (role === 'control') {
+      io.emit('assign-color', getRandomColor());
     }
   });
 
   socket.on('draw', data => {
-    io.emit('motion', {
-      deviceId: data.deviceId,
-      x: data.x,
-      y: data.y,
-      color: data.color
-    });
+    if (role === 'control') {
+      io.emit('motion', data);
+    }
   });
 
   socket.on('draw-end', data => {
-    io.emit('motion', {
-      deviceId: data.deviceId,
-      x: -1, y: -1
-    });
-  });
-
-  socket.on('disconnect', () => {
-    console.log('Verbindung getrennt:', socket.id);
+    if (role === 'control') {
+      io.emit('draw-end', data);
+    }
   });
 });
 
 function getRandomColor() {
-  const colors = ['#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#46f0f0'];
+  const colors = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231'];
   return colors[Math.floor(Math.random() * colors.length)];
 }
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server läuft auf Port ${PORT}`));
+serv.listen(PORT, () => {
+  console.log('Server läuft auf Port', PORT);
+});
