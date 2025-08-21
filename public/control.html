@@ -2,164 +2,96 @@
 <html lang="de">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Control</title>
   <style>
-    html, body { margin:0; padding:0; height:100%; background:#222; color:#fff; font-family:sans-serif;
+    html, body {
+      margin:0; padding:0; height:100%; background:#222;
+      color:#fff; font-family:sans-serif;
       display:flex; flex-direction:column; align-items:center; justify-content:center;
-      -webkit-user-select:none; user-select:none; touch-action:none; overscroll-behavior:none; }
-    #version { position:absolute; top:10px; right:10px; opacity:0.7; font-size:0.9em; }
-    .btn { border:4px solid transparent; border-radius:12px; background:#444; width:110px; height:110px; margin:10px; }
-    #gyroBtn { border-radius:16px; } #laserBtn { border-radius:50%; background:#cc0000; display:none; }
-    #net { position:fixed; bottom:8px; left:8px; font:12px/1.2 monospace; opacity:.85; background:#0008; padding:6px 8px; border-radius:8px; }
-    #lagPanel { position: fixed; right: 8px; bottom: 8px; left: 8px; max-height: 45vh; overflow:auto;
-      background:#000a; border:1px solid #444; border-radius:10px; padding:8px; font:12px/1.35 monospace; }
-    #lagPanel h3 { margin:0 0 6px 0; font:600 12px/1.2 system-ui, sans-serif; display:flex; align-items:center; gap:8px; }
-    #lagPanel button { background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:2px 8px; cursor:pointer; }
-    #lagTable { width:100%; border-collapse:collapse; }
-    #lagTable th, #lagTable td { border-bottom:1px solid #333; padding:4px 6px; text-align:left; }
-    #lagTable th { position: sticky; top: 0; background:#111; }
-    .warn { color:#ffcc66; } .bad  { color:#ff6666; }
-    @media (orientation: landscape) { body::after { content:"Bitte im Hochformat nutzen (Rotation gesperrt)."; position:fixed; bottom:12px; left:0; right:0; text-align:center; font-size:12px; opacity:.6; } }
+    }
+    #version {
+      position:absolute; top:10px; right:10px; opacity:0.7; font-size:0.9em;
+    }
+    #gyroBtn, #laserBtn {
+      font-size:1.2em; padding:0.5em 1em; margin:0.5em;
+      color:#fff; background:#444;
+      border:4px solid transparent; border-radius:4px;
+      transition:border-color .3s;
+    }
+    #laserBtn {
+      width:100px; height:100px; border-radius:50%;
+      background:red; display:none;
+    }
   </style>
 </head>
 <body>
-  <div id="version">v2.2.3 Control</div>
-  <button id="gyroBtn" class="btn" aria-label="Gyro erlauben"></button>
-  <button id="laserBtn" class="btn" aria-label="Laser halten"></button>
-
-  <div id="net">RTT: – ms | send FPS: –</div>
-
-  <div id="lagPanel">
-    <h3>Controller-Netzwerk (RTT & Sende-Rate)
-      <span style="flex:1"></span><button id="clearLag">Leeren</button>
-    </h3>
-    <table id="lagTable">
-      <thead><tr><th>Zeit</th><th>Metric</th><th>Wert</th><th>Hinweis</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
+  <div id="version">v1.7 Control</div>
+  <button id="gyroBtn">Gyro freigeben</button>
+  <button id="laserBtn">Laser</button>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    class OneEuroFilter{constructor(m=1.2,b=0.03,d=1){this.minCutoff=m;this.beta=b;this.dCutoff=d;this.xHat=null;this.dxHat=0;}
-      alpha(fc,dt){const tau=1/(2*Math.PI*fc);return 1/(1+tau/dt);} filter(x,dt){if(dt<=0||!isFinite(dt))dt=1/60;
-      if(this.xHat===null){this.xHat=x;this.dxHat=0;return x;} const dx=(x-this.xHat)/dt,aD=this.alpha(this.dCutoff,dt); this.dxHat=aD*dx+(1-aD)*this.dxHat;
-      const cutoff=this.minCutoff+this.beta*Math.abs(this.dxHat),aX=this.alpha(cutoff,dt); this.xHat=aX*x+(1-aX)*this.xHat; return this.xHat;} reset(x){this.xHat=x;this.dxHat=0;}}
+    const socket    = io();
+    const gyroBtn   = document.getElementById('gyroBtn');
+    const laserBtn  = document.getElementById('laserBtn');
+    let myColor     = null;
+    let drawing     = false;
+    let zeroA = 0, zeroB = 0, lastAlpha = 0, lastBeta = 0;
 
-    const socket = io({ transports:['websocket'], upgrade:false });
-
-    const gyroBtn=document.getElementById('gyroBtn'), laserBtn=document.getElementById('laserBtn');
-    const netBox=document.getElementById('net'), tbody=document.querySelector('#lagTable tbody');
-    document.getElementById('clearLag').onclick=()=>{tbody.innerHTML='';};
-    const addLagRow=(metric,val,note,sev='warn')=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${new Date().toLocaleTimeString()}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`;tbody.prepend(tr);while(tbody.children.length>80)tbody.removeChild(tbody.lastChild);};
-
-    let myColor=null,drawing=false,isStartPending=false;
-    let lastAlpha=0,lastBeta=0,lastGamma=0,zeroA=0,zeroB=0,zeroG=0;
-    const fA=new OneEuroFilter(1.2,0.03,1.0), fB=new OneEuroFilter(1.2,0.03,1.0), fG=new OneEuroFilter(1.8,0.03,1.0);
-    let maxHor=20,maxVer=20;
-
-    // Adaptive Sendefrequenz
-    let targetSendFps=30; const MIN_FPS=12, MAX_FPS=30;
-    let sendIntervalMs=1000/targetSendFps;
-
-    // Delta-Gating
-    let lastSentX=NaN, lastSentY=NaN, lastSentG=NaN, lastSentT=0;
-    const EPS_POS=0.008, EPS_ANG=1.5, KEEPALIVE_MS=140;
-
-    // Binary payload: [float x, float y, float angleDeg, uint32 seq, uint32 flags]
-    let seq=0; const sendTimes=new Map(); let rttMs=NaN;
-    let sendsThisSec=0, sendFps=0; setInterval(()=>{sendFps=sendsThisSec; sendsThisSec=0;},1000);
-
-    // >>> weniger empfindliche RTT-Warnschwellen
-    const RTT_WARN=200;  // vorher 80
-    const RTT_BAD =350;  // vorher 140
-
-    socket.on('connect',()=>{socket.emit('identify',{role:'control',deviceId:socket.id});socket.emit('request-settings');});
-    socket.on('assign-color',c=>{myColor=c;laserBtn.style.borderColor=c;gyroBtn.style.borderColor=c;});
-    socket.on('settings',s=>{if(typeof s.maxHor==='number')maxHor=s.maxHor; if(typeof s.maxVer==='number')maxVer=s.maxVer;});
-
-    socket.on('rate-suggest',({targetFps})=>{
-      if(typeof targetFps==='number'){
-        targetSendFps=Math.max(MIN_FPS,Math.min(MAX_FPS,targetFps));
-        sendIntervalMs=1000/targetSendFps;
-        addLagRow('Rate', `${targetSendFps} fps`, 'vom Display vorgeschlagen','warn');
-      }
+    socket.on('connect', () => {
+      socket.emit('identify',      { role:'control', deviceId: socket.id });
+      socket.emit('request-settings');
     });
 
-    socket.on('draw-ack',({seq:ackSeq})=>{
-      const t0=sendTimes.get(ackSeq);
-      if(t0!==undefined){
-        const rtt=performance.now()-t0;
-        rttMs=isNaN(rttMs)?rtt:(0.9*rttMs+0.1*rtt); // stärker geglättet
-        sendTimes.delete(ackSeq);
-        if(rtt>RTT_BAD) addLagRow('RTT',`${Math.round(rtt)} ms`,'starker Spike','bad');
-        else if(rtt>RTT_WARN) addLagRow('RTT',`${Math.round(rtt)} ms`,'hoch','warn');
-      }
+    // Farbe vom Server bekommen, aber Button erst nach Permission zeigen
+    socket.on('assign-color', color => {
+      myColor = color;
+      laserBtn.style.borderColor = myColor;
     });
 
-    async function tryLockPortrait(){try{if(document.documentElement.requestFullscreen)await document.documentElement.requestFullscreen({navigationUI:'hide'}).catch(()=>{});if(screen.orientation?.lock)await screen.orientation.lock('portrait');}catch{}}
-    document.addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
-    window.addEventListener('orientationchange',tryLockPortrait);
-
-    gyroBtn.addEventListener('click',async()=>{
-      try{
-        if(DeviceOrientationEvent?.requestPermission){const p=await DeviceOrientationEvent.requestPermission();if(p!=='granted')return alert('Gyroskop-Zugriff benötigt!');}
-        await tryLockPortrait();
-        gyroBtn.style.display='none'; laserBtn.style.display='block';
-      }catch{alert('Gyro nicht verfügbar.');}
-    });
-
-    window.addEventListener('deviceorientation',ev=>{lastAlpha=ev.alpha??0; lastBeta=ev.beta??0; lastGamma=ev.gamma??0;});
-
-    laserBtn.addEventListener('touchstart',e=>{
-      e.preventDefault(); drawing=true; isStartPending=true;
-      fA.reset(lastAlpha); fB.reset(lastBeta); fG.reset(lastGamma);
-      zeroA=fA.xHat; zeroB=fB.xHat; zeroG=fG.xHat;
-      lastSentX=NaN; lastSentY=NaN; lastSentG=NaN; lastSentT=0;
-    },{passive:false});
-    laserBtn.addEventListener('touchend',e=>{e.preventDefault(); drawing=false; socket.emit('draw-end');},{passive:false});
-
-    let lastSendT=performance.now();
-    function loop(){
-      const now=performance.now();
-      if(drawing && (now-lastSendT)>=sendIntervalMs){
-        const dt=(now-lastSendT)/1000; lastSendT=now;
-
-        const aF=fA.filter(lastAlpha,dt), bF=fB.filter(lastBeta,dt), gF=fG.filter(lastGamma,dt);
-        let dA=aF-zeroA; if(dA>180)dA-=360; if(dA<-180)dA+=360;
-        let dB=bF-zeroB; let dG=gF-zeroG;
-        dA=Math.max(-maxHor,Math.min(maxHor,dA));
-        dB=Math.max(-maxVer,Math.min(maxVer,dB));
-        dG=Math.max(-90,Math.min(90,dG));
-
-        const x=1-((dA+maxHor)/(2*maxHor));
-        const y=1-((dB+maxVer)/(2*maxVer));
-
-        // Delta-Gating
-        const bigMove = !isFinite(lastSentX) ||
-                        Math.abs(x - lastSentX) > EPS_POS ||
-                        Math.abs(y - lastSentY) > EPS_POS ||
-                        Math.abs(dG - lastSentG) > EPS_ANG ||
-                        (now - lastSentT) > KEEPALIVE_MS;
-
-        if(isFinite(x)&&isFinite(y)&&bigMove){
-          const idSeq=++seq; sendTimes.set(idSeq,now); sendsThisSec++;
-          const flags=isStartPending?1:0; isStartPending=false;
-
-          const buf=new ArrayBuffer(20); const dv=new DataView(buf);
-          dv.setFloat32(0,x,true); dv.setFloat32(4,y,true); dv.setFloat32(8,dG,true); dv.setUint32(12,idSeq,true); dv.setUint32(16,flags,true);
-
-          socket.compress(false).volatile.emit('draw', buf);
-
-          lastSentX=x; lastSentY=y; lastSentG=dG; lastSentT=now;
+    // Gyro-Button: nach Permission Laser-Button anzeigen
+    gyroBtn.addEventListener('click', async () => {
+      if (DeviceOrientationEvent?.requestPermission) {
+        const perm = await DeviceOrientationEvent.requestPermission().catch(console.warn);
+        if (perm !== 'granted') {
+          return alert('Gyroskop‑Zugriff benötigt!');
         }
       }
-      netBox.textContent=`RTT: ${isNaN(rttMs)?'–':Math.round(rttMs)} ms | send FPS: ${sendFps||'–'} (target ${targetSendFps})`;
-      requestAnimationFrame(loop);
-    }
-    requestAnimationFrame(loop);
+      // Wenn Farbe schon da ist, direkt wechseln
+      if (myColor) {
+        gyroBtn.style.display  = 'none';
+        laserBtn.style.display = 'block';
+      }
+    });
+
+    // Laser starten
+    laserBtn.addEventListener('touchstart', e => {
+      e.preventDefault();
+      drawing = true;
+      zeroA = lastAlpha; zeroB = lastBeta;
+    }, { passive:false });
+
+    // Laser stoppen
+    laserBtn.addEventListener('touchend', e => {
+      e.preventDefault();
+      drawing = false;
+      socket.emit('draw-end', { deviceId: socket.id });
+    }, { passive:false });
+
+    window.addEventListener('deviceorientation', ev => {
+      lastAlpha = ev.alpha; lastBeta = ev.beta;
+      if (!drawing) return;
+      let dA = lastAlpha - zeroA; if (dA > 180) dA -= 360; if (dA < -180) dA += 360;
+      let dB = lastBeta  - zeroB;
+      // Normierung (gleiche Logik wie vorher, adapte maxHor/maxVer falls nötig):
+      const maxHor = 20, maxVer = 20;
+      dA = Math.max(-maxHor, Math.min(maxHor, dA));
+      dB = Math.max(-maxVer, Math.min(maxVer, dB));
+      const x = 1 - ((dA + maxHor) / (2 * maxHor));
+      const y = 1 - ((dB + maxVer) / (2 * maxVer));
+      socket.emit('draw', { x, y, deviceId: socket.id, color: myColor });
+    });
   </script>
 </body>
 </html>
