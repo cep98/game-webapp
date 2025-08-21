@@ -3,68 +3,46 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Game Display – Paddle-Line (v2.2.3)</title>
+  <title>Game Display mit Hindernissen (v1.17)</title>
   <style>
-    html, body { margin:0; padding:0; width:100%; height:100%; background:#000; overflow:hidden; }
-    #version  { position:absolute; top:10px; left:10px; color:#fff; opacity:0.6; font-size:0.9em; z-index:2; }
-    #metrics  { position:absolute; top:10px; right:10px; z-index:2; font:12px/1.4 monospace; background:#0008; color:#fff; padding:8px 10px; border-radius:8px; max-width:42vw; white-space:pre; }
-    canvas    { display:block; margin:0 auto; background:#000; }
-    #lagPanel { position:absolute; left:10px; bottom:10px; right:10px; max-height:40vh; overflow:auto; background:#000a; border:1px solid #444;
-      border-radius:10px; padding:8px; z-index:3; font:12px/1.35 monospace; color:#fff; }
-    #lagPanel h3 { margin:0 0 6px 0; font:600 12px/1.2 system-ui,sans-serif; display:flex; align-items:center; gap:8px; }
-    #lagPanel button { background:#333; color:#fff; border:1px solid #555; border-radius:6px; padding:2px 8px; cursor:pointer; }
-    #lagTable { width:100%; border-collapse:collapse; }
-    #lagTable th, #lagTable td { border-bottom:1px solid #333; padding:4px 6px; text-align:left; }
-    #lagTable th { position: sticky; top: 0; background:#111; }
-    .warn { color:#ffcc66; } .bad { color:#ff6666; }
+    html, body {
+      margin:0; padding:0; width:100%; height:100%;
+      background:#000; overflow:hidden;
+    }
+    #version {
+      position:absolute; top:10px; left:10px;
+      color:#fff; opacity:0.6; font-size:0.9em;
+    }
+    canvas {
+      display:block; margin:0 auto; background:#000;
+    }
   </style>
 </head>
 <body>
-  <div id="version">v2.2.3 Game</div>
-  <div id="metrics">—</div>
-  <div id="lagPanel">
-    <h3>Übertragungs-Lag (pro Controller)
-      <span style="flex:1"></span>
-      <button id="clearLag">Leeren</button>
-    </h3>
-    <table id="lagTable">
-      <thead><tr><th>Zeit</th><th>Dev</th><th>Metric</th><th>Wert</th><th>Hinweis</th></tr></thead>
-      <tbody></tbody>
-    </table>
-  </div>
+  <div id="version">v1.17 Game</div>
   <canvas id="gameCanvas"></canvas>
 
   <script src="/socket.io/socket.io.js"></script>
   <script>
-    // WebSocket bevorzugt (Server erlaubt Polling zusätzlich)
-    const socket = io({ transports:['websocket'], upgrade:false });
-    socket.on('connect', () => { socket.emit('identify',{ role:'display', deviceId: socket.id }); socket.emit('request-settings'); });
+    const socket = io();
+    socket.on('connect', () => {
+      socket.emit('identify',{ role:'display', deviceId: socket.id });
+      socket.emit('request-settings');
+    });
 
-    const canvas = document.getElementById('gameCanvas');
-    const ctx    = canvas.getContext('2d');
-    const metricsBox = document.getElementById('metrics');
-
-    // Lag-Panel helpers
-    const tbody = document.querySelector('#lagTable tbody');
-    document.getElementById('clearLag').onclick = () => { tbody.innerHTML=''; };
-    const clock = () => new Date().toLocaleTimeString();
-    function addLagRow(devId, metric, val, note, sev='warn'){
-      const tr=document.createElement('tr');
-      tr.innerHTML = `<td>${clock()}</td><td>${devId}</td><td>${metric}</td><td class="${sev}">${val}</td><td>${note||''}</td>`;
-      tbody.prepend(tr);
-      while (tbody.children.length > 140) tbody.removeChild(tbody.lastChild);
-    }
-
-    // Assets
+    const canvas = document.getElementById('gameCanvas'),
+          ctx    = canvas.getContext('2d');
     let maskCanvas, maskCtx;
+
     const bgImage    = new Image(),
           maskImage  = new Image(),
           ballBase   = new Image(),
           ballShadow = new Image();
-    bgImage.src    = 'background.png';
-    maskImage.src  = 'mask.png';
-    ballBase.src   = 'ball-base.png';
-    ballShadow.src = 'ball-shadow.png';
+
+    bgImage.src    = '/background.png';
+    maskImage.src  = '/mask.png';
+    ballBase.src   = '/ball-base.png';
+    ballShadow.src = '/ball-shadow.png';
 
     let loaded=0;
     [bgImage, maskImage].forEach(img=>{
@@ -83,344 +61,177 @@
       };
     });
 
-    // Settings
-    let paddleLength = 80;   // 1/3 des ursprünglichen
-    let paddleWidth  = 14;
+    let smoothing = 0.5;
+    const FRICTION         = 0.995,
+          ANGULAR_FRICTION = 0.95,
+          BOUNCE           = 0.8,
+          BASE_STRENGTH    = 0.15,
+          SPEED_SCALE      = 0.0002,
+          PTR_TTL          = 500,
+          PTR_R            = 16;
 
-    // Physik-Parameter (reduzierte Elastizitäten)
-    const FRICTION=0.994, ANGULAR_FRICTION=0.96;
-    const WALL_E = 0.6;                  // Elastizität an der Maske (weiß)
-    const EDGE_E = 0.6;                  // Elastizität an Canvas-Rand
-    const RESTITUTION_PAD = 0.65;        // Rückprallfaktor Schläger vs. Ball (relativ)
-    const PTR_TTL=1000;
-    const MIN_BOUNCE_VN = 25;            // kleine Normalgeschw. -> kein Bounce
-
-    // EMA + kurze Interpolationssegmente (präziser)
-    const K_POS = 0.60, K_ANG = 0.40;
-    const SEG_DUR_MIN = 10, SEG_DUR_MAX = 60;
-    const CLAMP_VEL   = 4000;
-
-    // Helpers
-    function angLerp(a, b, t){
-      let d = b - a;
-      while (d > Math.PI)  d -= 2*Math.PI;
-      while (d < -Math.PI) d += 2*Math.PI;
-      return a + d * t;
-    }
-    const smoothstep = t => (t<=0?0:(t>=1?1:t*t*(3-2*t)));
-
-    function sampleIsWall(x,y){
-      if(x<0||y<0||x>=maskCanvas.width||y>=maskCanvas.height) return true;
-      const d = maskCtx.getImageData(x|0, y|0, 1, 1).data;
-      return (d[0]>240 && d[1]>240 && d[2]>240); // WEISS = Wand
-    }
-
-    // Paddles + Farben
-    const paddles = {}; // key -> paddle state
-    const deviceColors = {};
-    const COLORS=['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6','#008080','#9a6324','#800000','#469990'];
-    let colorIdx = 0;
-    const keyLabel = k => (typeof k==='number') ? k.toString(36) : String(k).slice(0,6);
-
-    // Ball
     let ball = { x:0, y:0, vx:0, vy:0, r:20, angle:0, angularVelocity:0 };
 
-    socket.on('settings', s => { if(typeof s.paddleWidth==='number') paddleWidth=s.paddleWidth; });
+    const pointers     = {};
+    const deviceColors = {};
+    const COLORS       = ['#e6194b','#3cb44b','#ffe119','#4363d8','#f58231','#911eb4','#46f0f0','#f032e6'];
+    let colorIndex=0;
 
-    // Eingehende Draw-Events: Binär (24 B) ODER JSON (Fallback)
-    socket.on('draw', (payload)=>{
-      const now = performance.now();
-      let key, xN, yN, angleDeg, seq, flags=0;
-
-      if (payload instanceof ArrayBuffer || ArrayBuffer.isView(payload)) {
-        const buf = payload.buffer ? payload.buffer : payload;
-        const dv  = new DataView(buf);
-        key      = dv.getUint32(0, true);
-        xN       = dv.getFloat32(4, true);
-        yN       = dv.getFloat32(8, true);
-        angleDeg = dv.getFloat32(12, true);
-        seq      = dv.getUint32(16, true);
-        flags    = dv.getUint32(20, true);
-      } else {
-        key      = payload.deviceKey ?? 'json';
-        xN       = payload.x;
-        yN       = payload.y;
-        angleDeg = payload.angleDeg;
-        seq      = payload.seq;
-        flags    = payload.isStart ? 1 : 0;
-        if (payload.color) deviceColors[key]=payload.color;
-      }
-
+    socket.on('draw', ({x,y,deviceId,color})=>{
       if (!canvas.width) return;
-
-      const rawX = xN * canvas.width;
-      const rawY = yN * canvas.height;
-      const rawA = (angleDeg ?? 0) * Math.PI/180;
-
-      if (!deviceColors[key]) deviceColors[key] = COLORS[colorIdx++ % COLORS.length];
-
-      let p = paddles[key];
-      const nowRecv = performance.now();
-
-      if (!p) {
-        p = paddles[key] = {
-          emaX: rawX, emaY: rawY, emaA: rawA,
-          x: rawX, y: rawY, a: rawA,
-          sx: rawX, sy: rawY, sa: rawA,
-          ex: rawX, ey: rawY, ea: rawA,
-          st: 0, sd: 33,
-          color: deviceColors[key],
-          lastSeq: seq ?? 0, drops:0, recvCount:0, lastRecvT: nowRecv, dtJitter:0, recvFps:0, expectedFps:30, lastSuggestT:0
-        };
+      const now  = performance.now();
+      const rawX = x * canvas.width, rawY = y * canvas.height;
+      if (color) deviceColors[deviceId] = color;
+      else if (!deviceColors[deviceId]) deviceColors[deviceId] = COLORS[colorIndex++ % COLORS.length];
+      const prev = pointers[deviceId];
+      if (prev) {
+        const sx = prev.sx + (rawX - prev.sx)*(1-smoothing);
+        const sy = prev.sy + (rawY - prev.sy)*(1-smoothing);
+        pointers[deviceId] = { sx,sy, px:prev.sx, py:prev.sy, t:now, pt:prev.pt };
       } else {
-        // Netzmetriken
-        p.recvCount++;
-        const dt = nowRecv - p.lastRecvT; p.lastRecvT = nowRecv;
-        const target = 1000 / p.expectedFps;
-        const j = Math.abs(dt - target);
-        p.dtJitter = p.dtJitter ? (0.9*p.dtJitter + 0.1*j) : j;
-
-        if (typeof seq === 'number') {
-          if (seq > p.lastSeq + 1) { const inc = (seq - p.lastSeq - 1); p.drops += inc; addLagRow(keyLabel(key),'Drops',`+${inc}`,'Pakete übersprungen','warn'); }
-          p.lastSeq = Math.max(p.lastSeq, seq);
-        }
-
-        // EMA (schnelleres Folgen)
-        p.emaX += (rawX - p.emaX) * K_POS;
-        p.emaY += (rawY - p.emaY) * K_POS;
-        p.emaA  = angLerp(p.emaA, rawA, K_ANG);
-
-        if (flags & 1) {
-          p.x = p.emaX = rawX; p.y = p.emaY = rawY; p.a = p.emaA = rawA;
-        }
-
-        // neues Interpolations-Segment
-        p.sx = p.x; p.sy = p.y; p.sa = p.a;
-        p.ex = p.emaX; p.ey = p.emaY; p.ea = p.emaA;
-        p.st = 0;
-        const ideal = 1000 / Math.max(15, p.expectedFps);
-        let dur = Math.min(ideal, dt * 0.7);
-        if (!isFinite(dur) || dur <= 0) dur = ideal;
-        p.sd = Math.max(SEG_DUR_MIN, Math.min(SEG_DUR_MAX, dur));
-
-        // Cap implizite Geschwindigkeit
-        const vx = (p.ex - p.sx) / (p.sd/1000);
-        const vy = (p.ey - p.sy) / (p.sd/1000);
-        const v = Math.hypot(vx, vy);
-        if (v > CLAMP_VEL) {
-          const s = CLAMP_VEL / v;
-          p.ex = p.sx + (p.ex - p.sx) * s;
-          p.ey = p.sy + (p.ey - p.sy) * s;
-        }
+        pointers[deviceId] = { sx:rawX, sy:rawY, px:rawX, py:rawY, t:now, pt:now };
       }
-
-      // ACK → Control mit deviceKey
-      if (typeof seq === 'number') socket.emit('draw-ack', { deviceKey: key, seq });
     });
+    socket.on('draw-end', ({deviceId})=> delete pointers[deviceId]);
+    socket.on('settings', data=> smoothing = data.smoothing);
 
-    // Display → Control: Rate-Suggest (wie zuvor)
-    setInterval(()=>{
-      for(const k in paddles){
-        const p = paddles[k];
-        const fps = p.recvCount; p.recvFps = fps; p.recvCount = 0;
-
-        const warnFps = Math.round(p.expectedFps*0.85);
-        const badFps  = Math.round(p.expectedFps*0.6);
-
-        if (fps && fps < badFps)      addLagRow(keyLabel(k),'recv FPS',`${fps}`,'sehr niedrig','bad');
-        else if (fps && fps < warnFps) addLagRow(keyLabel(k),'recv FPS',`${fps}`,'niedrig','warn');
-
-        const warnJitter = (1000/p.expectedFps)*0.8;
-        const badJitter  = (1000/p.expectedFps)*1.4;
-
-        if (p.dtJitter > badJitter)      addLagRow(keyLabel(k),'Jitter',`${p.dtJitter.toFixed(1)} ms`,'stark schwankend','bad');
-        else if (p.dtJitter > warnJitter) addLagRow(keyLabel(k),'Jitter',`${p.dtJitter.toFixed(1)} ms`,'schwankend','warn');
-
-        const now = performance.now();
-        if (now - p.lastSuggestT > 2000) {
-          let desired = 30;
-          if (fps < warnFps || p.dtJitter > warnJitter) desired = 20;
-          if (fps < badFps  || p.dtJitter > badJitter)  desired = 15;
-          if (desired !== p.expectedFps) {
-            p.expectedFps = desired;
-            socket.emit('rate-suggest', { deviceKey: (typeof k==='string'? Number.NaN : Number(k)), targetFps: desired });
-          }
-          p.lastSuggestT = now;
-        }
+    function cleanup(now){
+      for(let id in pointers){
+        if(now - pointers[id].t > PTR_TTL) delete pointers[id];
       }
-    }, 1000);
-
-    socket.on('draw-end', ({deviceKey})=> delete paddles[deviceKey]);
-
-    function cleanup(now){ for(const k in paddles){ if(now - paddles[k].lastRecvT > PTR_TTL) delete paddles[k]; } }
-
-    // --- robuste Maskenkollision ---
-    function resolveMaskCollisions(){
-      // 1) Normal über Kreisprobe sammeln
-      let nxSum = 0, nySum = 0, hitCount = 0;
-      const SAMPLES = 32;
-      for(let i=0;i<SAMPLES;i++){
-        const ang = i*(Math.PI*2/SAMPLES);
-        const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
-        const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
-        if(sampleIsWall(ex,ey)){
-          nxSum += Math.cos(ang);
-          nySum += Math.sin(ang);
-          hitCount++;
-        }
-      }
-      if (hitCount === 0) return false;
-
-      // 2) Normale mitteln
-      let nx = nxSum / hitCount, ny = nySum / hitCount;
-      const nd = Math.hypot(nx, ny) || 1; nx/=nd; ny/=nd;
-
-      // 3) Iterativ herauslösen (gegen „Hineinschieben“)
-      // Schrittweite wächst exponentiell, max. 12 Iterationen
-      let step = 1.5; let iter = 0;
-      while (iter++ < 12) {
-        if (!sampleIsWall(Math.round(ball.x + nx*ball.r), Math.round(ball.y + ny*ball.r))) break;
-        ball.x += nx * step;
-        ball.y += ny * step;
-        step *= 1.6;
-      }
-
-      // 4) Rückprall (gedämpft) – nur wenn Annäherung und genügend Energie
-      const vDotN = ball.vx*nx + ball.vy*ny;
-      if (vDotN < -MIN_BOUNCE_VN) {
-        ball.vx -= (1 + WALL_E) * vDotN * nx;
-        ball.vy -= (1 + WALL_E) * vDotN * ny;
-      } else {
-        // kleine normal-Komponente killen (kein Zittern)
-        ball.vx -= vDotN * nx;
-        ball.vy -= vDotN * ny;
-      }
-
-      // leicht aus der Wand schieben
-      ball.x += nx * 1.5;
-      ball.y += ny * 1.5;
-
-      return true;
     }
 
     function update(dt){
       if(!maskCtx) return;
-      const now = performance.now();
-      cleanup(now);
+      cleanup(performance.now());
 
-      // Interpolation der Schläger
-      for(const k in paddles){
-        const p = paddles[k];
-        p.st += dt*1000;
-        const s = smoothstep(Math.min(1, p.st / p.sd));
-        p.x = p.sx + (p.ex - p.sx) * s;
-        p.y = p.sy + (p.ey - p.sy) * s;
-        p.a = angLerp(p.sa, p.ea, s);
-      }
+      for(let id in pointers){
+        const p = pointers[id];
+        const dx = p.sx - p.px, dy = p.sy - p.py;
+        const segLen = Math.hypot(dx,dy);
+        const steps = Math.ceil(segLen / 8);
+        const hitRadius = ball.r * 1.1 + PTR_R;
 
-      // Kollisionen Schläger (rel. Geschwindigkeit, gedämpfter Bounce)
-      for(const k in paddles){
-        const p = paddles[k];
-        const u = { x: Math.cos(p.a), y: Math.sin(p.a) };
-        const L2 = paddleLength * 0.5;
+        for (let i = 0; i <= steps; i++) {
+          const t = i / steps;
+          const ix = p.px + dx * t;
+          const iy = p.py + dy * t;
 
-        const vx = ball.x - p.x;
-        const vy = ball.y - p.y;
-        let tProj = vx*u.x + vy*u.y;
-        tProj = Math.max(-L2, Math.min(L2, tProj));
-        const qx = p.x + u.x * tProj;
-        const qy = p.y + u.y * tProj;
+          const dist = Math.hypot(ball.x - ix, ball.y - iy);
+          if (dist <= hitRadius) {
+            let nx = ball.x - ix;
+            let ny = ball.y - iy;
+            const d = Math.hypot(nx, ny) || 1;
+            nx /= d; ny /= d;
 
-        let nx = ball.x - qx;
-        let ny = ball.y - qy;
-        const dist = Math.hypot(nx, ny);
-        const hitDist = ball.r + paddleWidth*0.5;
+            const deltaT = Math.max(p.t - p.pt, 1);
+            const speed = segLen * 1000 / deltaT;
+            const strength = BASE_STRENGTH + speed * SPEED_SCALE;
 
-        if (dist <= hitDist) {
-          const d = dist || 1; nx/=d; ny/=d;
+            ball.vx += nx * strength;
+            ball.vy += ny * strength;
 
-          // minimal aus dem Schläger heraus
-          const pen = hitDist - dist + 0.5;
-          ball.x += nx * pen; ball.y += ny * pen;
+            const rx = ix - ball.x;
+            const ry = iy - ball.y;
+            const tx = -ny, ty = nx;
+            ball.angularVelocity += (rx * ty - ry * tx) * strength * 0.005;
 
-          // relative Normalgeschwindigkeit
-          const pvx = (p.ex - p.sx) / (p.sd/1000 || 1/60);
-          const pvy = (p.ey - p.sy) / (p.sd/1000 || 1/60);
-          const vRelN = (ball.vx - pvx) * nx + (ball.vy - pvy) * ny;
+            ball.x += nx * 1.5;
+            ball.y += ny * 1.5;
 
-          if (vRelN < -MIN_BOUNCE_VN) {
-            const jn = -(1 + RESTITUTION_PAD) * vRelN;
-            ball.vx += jn * nx; ball.vy += jn * ny;
-          } else {
-            ball.vx -= vRelN * nx; ball.vy -= vRelN * ny; // kleben verhindern
+            p.pt = p.t;
+            break;
           }
-
-          // tangentiale Reibung + Spin
-          const tx = -ny, ty = nx;
-          const vRelT = (ball.vx - pvx) * tx + (ball.vy - pvy) * ty;
-          const fr = 0.012;
-          ball.vx -= vRelT * fr * tx;
-          ball.vy -= vRelT * fr * ty;
-          ball.angularVelocity += vRelT * 0.002;
         }
       }
 
-      // Integration
-      ball.x += ball.vx*dt; ball.y += ball.vy*dt; ball.angle += ball.angularVelocity*dt;
+      ball.x += ball.vx*dt;
+      ball.y += ball.vy*dt;
+      ball.angle += ball.angularVelocity*dt;
 
-      // Maske: robust lösen
-      resolveMaskCollisions();
-
-      // Canvas-Grenzen (gedämpft)
-      if(ball.x-ball.r<0){ ball.x=ball.r; const v=ball.vx; if (v< -MIN_BOUNCE_VN) ball.vx*=-EDGE_E; else ball.vx=0; ball.angularVelocity*=-1; }
-      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; const v=ball.vx; if (v> MIN_BOUNCE_VN) ball.vx*=-EDGE_E; else ball.vx=0; ball.angularVelocity*=-1; }
-      if(ball.y-ball.r<0){ ball.y=ball.r; const v=ball.vy; if (v< -MIN_BOUNCE_VN) ball.vy*=-EDGE_E; else ball.vy=0; ball.angularVelocity*=-1; }
-      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; const v=ball.vy; if (v> MIN_BOUNCE_VN) ball.vy*=-EDGE_E; else ball.vy=0; ball.angularVelocity*=-1; }
-
-      // Dämpfung
-      ball.vx *= FRICTION; ball.vy *= FRICTION; ball.angularVelocity *= ANGULAR_FRICTION;
-
-      // Kurzmetrics
-      const lines=[];
-      for(const k in paddles){
-        const p = paddles[k];
-        lines.push(`${keyLabel(k)} | fps≈${p.recvFps ?? '…'} | jitter≈${p.dtJitter?.toFixed(1) ?? '…'}ms | drops=${p.drops}`);
+      // Korrekte Maskenkollision: Ball darf nur auf heller Fläche bleiben
+      let correctionX = 0, correctionY = 0, hitCount = 0;
+      for(let i=0;i<16;i++){
+        const ang = i*(Math.PI*2/16);
+        const ex = Math.round(ball.x + Math.cos(ang)*ball.r);
+        const ey = Math.round(ball.y + Math.sin(ang)*ball.r);
+        if(ex>=0 && ey>=0 && ex<maskCanvas.width && ey<maskCanvas.height){
+          const d = maskCtx.getImageData(ex,ey,1,1).data;
+          // Weiß = Spielfläche → also Kollision, wenn der Punkt NICHT weiß
+          if(d[0]<200 || d[1]<200 || d[2]<200){
+            const nx = Math.cos(ang);
+            const ny = Math.sin(ang);
+            correctionX += nx;
+            correctionY += ny;
+            hitCount++;
+          }
+        }
       }
-      metricsBox.textContent = lines.length ? lines.join('\n') : 'Warten auf Controller…';
+
+      if (hitCount > 0) {
+        correctionX /= hitCount;
+        correctionY /= hitCount;
+        const vDotN = ball.vx*correctionX + ball.vy*correctionY;
+        ball.vx -= 2*vDotN*correctionX;
+        ball.vy -= 2*vDotN*correctionY;
+        ball.x += correctionX * 2;
+        ball.y += correctionY * 2;
+      }
+
+      if(ball.x-ball.r<0){ ball.x=ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.x+ball.r>canvas.width){ ball.x=canvas.width-ball.r; ball.vx*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.y-ball.r<0){ ball.y=ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
+      if(ball.y+ball.r>canvas.height){ ball.y=canvas.height-ball.r; ball.vy*=-BOUNCE; ball.angularVelocity*=-1; }
+
+      ball.vx *= FRICTION;
+      ball.vy *= FRICTION;
+      ball.angularVelocity *= ANGULAR_FRICTION;
     }
 
     function draw(){
-      if(bgImage.complete){ const bx=(canvas.width-bgImage.width)/2, by=(canvas.height-bgImage.height)/2; ctx.drawImage(bgImage,bx,by); }
-      else { ctx.clearRect(0,0,canvas.width,canvas.height); }
+      if(bgImage.complete){
+        const bx=(canvas.width-bgImage.width)/2;
+        const by=(canvas.height-bgImage.height)/2;
+        ctx.drawImage(bgImage,bx,by);
+      } else ctx.clearRect(0,0,canvas.width,canvas.height);
+// Schlagschatten unter dem Ball
+ctx.save();
+ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+ctx.shadowBlur = 15;
+ctx.shadowOffsetX = -15;
+ctx.shadowOffsetY = 15;
+ctx.beginPath();
+ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI * 2);
+ctx.fillStyle = 'rgba(0,0,0,1)';
+ctx.fill();
+ctx.restore();
 
-      // Ball-Schatten
-      ctx.save(); ctx.shadowColor='rgba(0,0,0,0.4)'; ctx.shadowBlur=15; ctx.shadowOffsetX=-15; ctx.shadowOffsetY=15;
-      ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fillStyle='rgba(0,0,0,1)'; ctx.fill(); ctx.restore();
-
-      // Ball
-      if(ballBase.complete){ ctx.save(); ctx.translate(ball.x,ball.y); ctx.rotate(ball.angle); ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2); ctx.restore(); }
-      if(ballShadow.complete){ ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2); }
-
-      // Paddles
-      for(const k in paddles){
-        const p = paddles[k];
+      if(ballBase.complete){
         ctx.save();
-        ctx.translate(p.x, p.y);
-        ctx.rotate(p.a);
-        ctx.fillStyle = p.color || '#fff';
-        ctx.beginPath();
-        const L=paddleLength, W=paddleWidth, r=W/2;
-        ctx.moveTo(-L/2,-r); ctx.lineTo(L/2,-r); ctx.arc(L/2,0,r,-Math.PI/2,Math.PI/2);
-        ctx.lineTo(-L/2,r);  ctx.arc(-L/2,0,r,Math.PI/2,-Math.PI/2);
-        ctx.closePath(); ctx.fill();
+        ctx.translate(ball.x,ball.y);
+        ctx.rotate(ball.angle);
+        ctx.drawImage(ballBase,-ball.r,-ball.r,ball.r*2,ball.r*2);
         ctx.restore();
+      }
+
+      if(ballShadow.complete){
+        ctx.drawImage(ballShadow,ball.x-ball.r,ball.y-ball.r,ball.r*2,ball.r*2);
+      }
+
+      for(let id in pointers){
+        const p=pointers[id];
+        ctx.fillStyle=deviceColors[id];
+        ctx.beginPath();
+        ctx.arc(p.sx,p.sy,PTR_R,0,2*Math.PI);
+        ctx.fill();
       }
     }
 
     let last=performance.now();
     (function loop(now){
-      const dt=(now-last)/1000; last=now;
-      update(dt); draw();
+      const dt=(now-last)/16.67; last=now;
+      update(dt);
+      draw();
       requestAnimationFrame(loop);
     })(last);
   </script>
