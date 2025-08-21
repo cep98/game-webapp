@@ -7,30 +7,38 @@
   <style>
     body { margin:0; background:#111; color:#fff; font-family:sans-serif; }
     header, section { padding:1em; }
-    header { display:flex; align-items:center; justify-content:space-between; background:#222; flex-wrap:wrap; gap:1rem; }
+    header { display:flex; align-items:center; justify-content:space-between; background:#222; }
     #version { font-size:0.9em; opacity:0.7; }
-    #settings { display:flex; gap:1em; align-items:center; flex-wrap:wrap; }
-    label { font-size:0.9em; display:flex; gap:.35em; align-items:center; }
-    input[type=number], input[type=range] { width:5.5em; }
+    #settings { display:flex; gap:1em; align-items:center; }
+    label { font-size:0.9em; }
+    input[type=number], input[type=range] { width:4em; }
     #clients { list-style:none; padding:0; margin:1em; }
-    #clients li { display:flex; align-items:center; justify-content:space-between; padding:0.5em 0; border-bottom:1px solid #333; }
-    .left { display:flex; align-items:center; gap:.75em; }
-    .dot { width:12px; height:12px; border-radius:50%; display:inline-block; background:#666; }
+    #clients li {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0.5em 0; border-bottom:1px solid #333;
+    }
+    .left {
+      display:flex; align-items:center;
+    }
+    .dot {
+      width:12px; height:12px; border-radius:50%;
+      display:inline-block; margin-right:0.75em; background:#666;
+    }
     .client-info { font-size:0.95em; }
-    .kill-btn { background:transparent; border:1px solid #f55; color:#f55; font-size:0.95em; cursor:pointer; border-radius:6px; padding:.25em .5em; }
+    .kill-btn {
+      background:transparent; border:none; color:#f55;
+      font-size:1.2em; cursor:pointer;
+    }
   </style>
 </head>
 <body>
   <header>
     <h1>Admin-Panel</h1>
-    <div id="version">v2.0.2 Admin</div>
+    <div id="version">v1.6 Admin</div>
     <div id="settings">
       <label>Max. Winkel H:<input id="maxHor" type="number" min="0" max="180" value="20" />°</label>
       <label>Max. Winkel V:<input id="maxVer" type="number" min="0" max="180" value="20" />°</label>
       <label>Glättung:<input id="smoothing" type="range" min="0" max="100" value="50" /> <span id="smoothingVal">50%</span></label>
-      <!-- Standard jetzt 80px -->
-      <label>Schläger-Länge:<input id="paddleLen" type="number" min="40" max="800" value="80" />px</label>
-      <label>Schläger-Breite:<input id="paddleWid" type="number" min="2" max="60" value="14" />px</label>
     </div>
   </header>
 
@@ -45,45 +53,28 @@
 
     socket.on('connect', () => {
       socket.emit('identify', { role:'admin', deviceId: null });
-      socket.emit('request-settings');
     });
 
     const maxHorInput    = document.getElementById('maxHor');
     const maxVerInput    = document.getElementById('maxVer');
     const smoothingInput = document.getElementById('smoothing');
     const smoothingVal   = document.getElementById('smoothingVal');
-    const paddleLenInput = document.getElementById('paddleLen');
-    const paddleWidInput = document.getElementById('paddleWid');
     const clientsList    = document.getElementById('clients');
 
     function sendSettings() {
       const maxHor    = parseFloat(maxHorInput.value);
       const maxVer    = parseFloat(maxVerInput.value);
       const smoothing = parseFloat(smoothingInput.value) / 100;
-      const paddleLength = parseFloat(paddleLenInput.value);
-      const paddleWidth  = parseFloat(paddleWidInput.value);
-      socket.emit('update-settings', { maxHor, maxVer, smoothing, paddleLength, paddleWidth });
+      socket.emit('update-settings', { maxHor, maxVer, smoothing });
     }
-
-    [maxHorInput, maxVerInput, paddleLenInput, paddleWidInput].forEach(inp => {
-      inp.addEventListener('change', sendSettings);
-    });
+    maxHorInput.addEventListener('change', sendSettings);
+    maxVerInput.addEventListener('change', sendSettings);
     smoothingInput.addEventListener('input', () => {
       smoothingVal.textContent = smoothingInput.value + '%';
       sendSettings();
     });
 
-    socket.on('settings', s => {
-      if (typeof s.maxHor === 'number') maxHorInput.value = s.maxHor;
-      if (typeof s.maxVer === 'number') maxVerInput.value = s.maxVer;
-      if (typeof s.smoothing === 'number') {
-        smoothingInput.value = Math.round(s.smoothing * 100);
-        smoothingVal.textContent = Math.round(s.smoothing * 100) + '%';
-      }
-      if (typeof s.paddleLength === 'number') paddleLenInput.value = s.paddleLength;
-      if (typeof s.paddleWidth  === 'number') paddleWidInput.value = s.paddleWidth;
-    });
-
+    // Client-Liste mit Kill-Buttons rendern
     socket.on('client-list', list => {
       clientsList.innerHTML = '';
       list.forEach(c => {
@@ -91,28 +82,38 @@
         const left = document.createElement('div');
         left.classList.add('left');
 
+        // Farbpunkt
         const dot = document.createElement('span');
         dot.classList.add('dot');
         if (c.color) dot.style.backgroundColor = c.color;
         left.appendChild(dot);
 
+        // Info-Text
         const info = document.createElement('span');
         info.classList.add('client-info');
         info.textContent = `${c.type} – ${c.deviceId} – ${c.ip}`;
         left.appendChild(info);
 
         li.appendChild(left);
+
+        // Nur bei control-Clients: Kill-Button
         if (c.type === 'control') {
           const btn = document.createElement('button');
           btn.classList.add('kill-btn');
-          btn.textContent = 'Trennen';
+          btn.textContent = '🗑️';
           btn.title = 'Client kicken';
-          btn.onclick = () => socket.emit('kill-client', { socketId: c.socketId });
+          btn.onclick = () => {
+            socket.emit('kill-client', { socketId: c.socketId });
+          };
           li.appendChild(btn);
         }
+
         clientsList.appendChild(li);
       });
     });
+
+    // Optional: Feedback, wenn Client neu laden soll
+    socket.on('client-list', list => { /* bleibt leer */ });
   </script>
 </body>
 </html>
